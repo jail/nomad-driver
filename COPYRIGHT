@@ -1,0 +1,37 @@
+This repository is under two licences.  Each file names its own in the
+SPDX-License-Identifier line of its header.
+
+BSD-2-Clause, in LICENSE.BSD
+	Copyright (c) 2024-2026 Faraz Vahedi <kfv@FreeBSD.org>
+
+	Everything written for this driver, which is all of it but the four
+	files below.  The licence is that of the FreeBSD source tree, so that
+	code can move between the two.
+
+MPL-2.0, in LICENSE.MPL
+	Copyright (c) HashiCorp, Inc.
+	Copyright (c) 2024-2026 Faraz Vahedi <kfv@FreeBSD.org>
+
+	main.go
+	driver/driver.go
+	driver/handle.go
+	driver/state.go
+
+	These began as files of hashicorp/nomad-skeleton-driver-plugin.  The
+	MPL is a per-file licence, and a modified version of a covered file
+	stays covered, so they keep it and the upstream notice, with a second
+	notice for the changes.  The BSD-2-Clause files are not derived from
+	them.
+
+The driver links against github.com/hashicorp/nomad.  Nomad 1.7.0 and later is
+under the Business Source Licence 1.1, whose Additional Use Grant permits
+production use except in an offering that competes with HashiCorp's paid
+versions of Nomad.  The plugin API a driver is written against, plugins/... and
+drivers/shared/..., is kept under the MPL-2.0.
+
+That API hands out types from two BUSL-1.1 packages, which no task driver can
+avoid importing: allocdir.TaskDir from client/allocdir and
+AllocatedTaskResources from nomad/structs.
+
+This is a property of the dependency and of a binary built from this source,
+not of the source in this repository.
