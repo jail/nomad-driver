@@ -235,7 +235,11 @@ A job that needs more adds a rule through `extra_rctl`.  `memoryuse:sigkill=`
 kills the task at the limit, counting a page once for each process that maps
 it.  `swapuse:deny=` caps what the jail may commit, which is more than it uses.
 `vmemoryuse:deny=` caps address space, of which a Go program reserves several
-times what it uses.  `resource_limits = false` does without the default.
+times what it uses.
+
+`resource_limits = false` in the task does without the derived rules and keeps
+the job's own.  In the plugin it turns `rctl(8)` off, and a task that asks for a
+rule is refused.
 
 CPU is not translated: Nomad counts MHz and `pcpu` is a percentage of a core, so
 a conversion would be a guess at the node's clock.  A job can state a ceiling in

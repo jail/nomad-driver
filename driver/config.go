@@ -476,6 +476,11 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 		return fmt.Errorf("children_max: %d is negative", tc.ChildrenMax)
 	}
 
+	if len(tc.ExtraRCTL) > 0 && !cfg.ResourceLimits {
+		return fmt.Errorf("extra_rctl needs rctl(8) rules, which resource_limits = false " +
+			"in the driver's plugin configuration turns off")
+	}
+
 	if !cfg.AllowPrivileged {
 		if len(tc.Allow) > 0 {
 			return fmt.Errorf("the allow list needs allow_privileged = true in the driver's plugin configuration")

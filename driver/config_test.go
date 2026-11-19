@@ -370,6 +370,23 @@ func TestTaskConfigValidate(t *testing.T) {
 			wantErr: `write "mount"`,
 		},
 		{
+			name:   "extra_rctl on a node that applies no rules",
+			mutate: func(tc *TaskConfig) { tc.ExtraRCTL = []string{"maxproc:deny=50"} },
+			driver: func(c *Config) {
+				c.AllowPrivileged = true
+				c.ResourceLimits = false
+			},
+			wantErr: "resource_limits = false",
+		},
+		{
+			name: "extra_rctl without the task's derived limits",
+			mutate: func(tc *TaskConfig) {
+				tc.ResourceLimits = false
+				tc.ExtraRCTL = []string{"maxproc:deny=50"}
+			},
+			driver: func(c *Config) { c.AllowPrivileged = true },
+		},
+		{
 			name:    "jail_params needs allow_privileged",
 			mutate:  func(tc *TaskConfig) { tc.JailParams = mapList{{"osrelease": "14.2-RELEASE"}} },
 			wantErr: "allow_privileged",

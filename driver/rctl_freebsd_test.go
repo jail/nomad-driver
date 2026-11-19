@@ -58,6 +58,15 @@ func TestRCTLRules(t *testing.T) {
 			want: []string{"jail:nomad-abc12345-web:pcpu:deny=50"},
 		},
 		{
+			name: "a task that turns its limits off keeps the rules it gave",
+			res:  resources(256, 0),
+			tc: func(tc *TaskConfig) {
+				tc.ResourceLimits = false
+				tc.ExtraRCTL = []string{"maxproc:deny=50"}
+			},
+			want: []string{"jail:nomad-abc12345-web:maxproc:deny=50"},
+		},
+		{
 			name: "a fully spelled out rule is passed through",
 			res:  resources(0, 0),
 			tc:   func(tc *TaskConfig) { tc.ExtraRCTL = []string{"jail:other:pcpu:deny=50"} },

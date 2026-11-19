@@ -344,7 +344,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 			return nil, nil, err
 		}
 	}
-	if taskConfig.ResourceLimits && d.config.ResourceLimits {
+	if d.config.ResourceLimits {
 		wanted := rctlRules(st, &taskConfig, cfg.Resources)
 		rules, err := applyRCTL(d.ctx, logger, wanted, len(taskConfig.ExtraRCTL) > 0)
 		st.RCTLRules = rules

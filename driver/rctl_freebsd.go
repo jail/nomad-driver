@@ -14,7 +14,8 @@ import (
 	"github.com/hashicorp/nomad/plugins/drivers"
 )
 
-// rctlRules turns a task's Nomad resources into rctl(8) rules on its jail.
+// rctlRules turns a task's Nomad resources into rctl(8) rules on its jail,
+// unless the task turned that off, and adds the rules the job gave.
 //
 // Memory becomes memoryuse:deny, which promises more than it does.  memoryuse
 // is resident set size and not deniable; rctl_rule_add() lets the rule through
@@ -30,7 +31,7 @@ import (
 func rctlRules(st *jailState, tc *TaskConfig, res *drivers.Resources) []string {
 	var rules []string
 
-	if res != nil && res.NomadResources != nil {
+	if tc.ResourceLimits && res != nil && res.NomadResources != nil {
 		mem := res.NomadResources.Memory
 		// MemoryMaxMB is the oversubscription ceiling, if the job set
 		// one, and what the task may reach.
