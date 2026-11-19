@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/client/allocdir"
@@ -297,13 +298,37 @@ func unmountAll(st *jailState) error {
 	return errors.Join(errs...)
 }
 
-// sweep unmounts a mount point and everything below it, forcing whatever is
-// still busy.  The jail is gone by now, so nothing should be.
+// How long sweep gives a filesystem to stop being busy before forcing it, and
+// how often it looks.
+const (
+	unmountGrace    = 2 * time.Second
+	unmountInterval = 10 * time.Millisecond
+)
+
+// sweep unmounts a mount point and everything below it.
+//
+// jail_remove(2) signals the jail's processes and returns, and until they have
+// gone their open files keep its filesystems busy.  That takes milliseconds, so
+// sweep waits for it before reaching for MNT_FORCE.
 func sweep(path string) error {
-	if err := jail.UnmountAll(path, 0); err == nil {
-		return nil
+	_, err := unmountPatiently(path)
+	return err
+}
+
+// unmountPatiently is sweep, reporting whether it had to force anything.
+func unmountPatiently(path string) (forced bool, err error) {
+	deadline := time.Now().Add(unmountGrace)
+	for {
+		err := jail.UnmountAll(path, 0)
+		if err == nil {
+			return false, nil
+		}
+		if !errors.Is(err, unix.EBUSY) || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(unmountInterval)
 	}
-	return jail.UnmountAll(path, jail.MountForce)
+	return true, jail.UnmountAll(path, jail.MountForce)
 }
 
 // ownsRootMount reports whether the driver mounted the jail root itself, rather

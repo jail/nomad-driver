@@ -5,10 +5,13 @@
 package driver
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/client/allocdir"
@@ -419,5 +422,85 @@ func TestMountAllCannotBeGivenAnotherSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "m", "unchecked")); err == nil {
 		t.Error("an option replaced the source that had been checked")
+	}
+}
+
+// TestSweepWaitsForTheJailsProcesses is the regression test for forcing an
+// unmount that only had to be waited for.
+//
+// jail_remove(2) returns once the jail's processes have been signalled, not
+// once they have gone.  On an idle machine an unmount attempted straight away
+// found the filesystem busy about one time in six, and free again within 20 ms.
+func TestSweepWaitsForTheJailsProcesses(t *testing.T) {
+	requireRoot(t)
+	if !executable(pathJexec) || !jexecSupportsWorkDir() {
+		t.Skip("needs a jexec(8) that takes -d")
+	}
+
+	// Enough of the host to run sleep(1), and one more filesystem for the
+	// jail's processes to sit in.
+	root := t.TempDir()
+	hold := filepath.Join(root, "hold")
+	var mounted []string
+	t.Cleanup(func() {
+		for i := len(mounted) - 1; i >= 0; i-- {
+			_ = jail.Unmount(mounted[i], jail.MountForce)
+		}
+	})
+	for _, dir := range []string{"/bin", "/lib", "/libexec"} {
+		target := filepath.Join(root, dir)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := jail.MountNullfs(dir, target, jail.MountReadOnly); err != nil {
+			t.Fatalf("mounting %s: %v", dir, err)
+		}
+		mounted = append(mounted, target)
+	}
+	if err := os.MkdirAll(hold, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := t.TempDir()
+
+	for round := range 25 {
+		name := fmt.Sprintf("nomad-sweep-%d-%d", os.Getpid(), round)
+		if _, err := jail.Set(jail.FlagCreate,
+			jail.Param{Name: jail.ParamName, Value: name},
+			jail.Param{Name: jail.ParamPath, Value: root},
+			jail.Param{Name: jail.ParamPersist},
+		); err != nil {
+			t.Fatalf("creating jail %s: %v", name, err)
+		}
+		if err := jail.MountNullfs(source, hold, 0); err != nil {
+			_ = removeJail(name)
+			t.Fatalf("mounting the filesystem to hold: %v", err)
+		}
+
+		var procs []*exec.Cmd
+		for range 8 {
+			cmd := exec.Command(pathJexec, "-d", "/hold", name, "/bin/sleep", "300")
+			if err := cmd.Start(); err != nil {
+				_ = removeJail(name)
+				t.Fatalf("starting a process in the jail: %v", err)
+			}
+			procs = append(procs, cmd)
+		}
+		// Long enough for them to have attached and changed directory.
+		time.Sleep(100 * time.Millisecond)
+
+		if err := removeJail(name); err != nil {
+			t.Fatalf("removing jail %s: %v", name, err)
+		}
+		forced, err := unmountPatiently(hold)
+		for _, cmd := range procs {
+			_ = cmd.Wait()
+		}
+		if err != nil {
+			t.Fatalf("round %d: unmounting: %v", round, err)
+		}
+		if forced {
+			t.Fatalf("round %d: the unmount was forced, though the jail's processes "+
+				"only needed waiting for", round)
+		}
 	}
 }
