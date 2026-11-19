@@ -33,7 +33,7 @@ const (
 )
 
 // devfs rulesets from /etc/defaults/devfs.rules.  A jail must never get ruleset
-// 0, which hides nothing.
+// 0, nor one that is not loaded: both hide nothing.
 const (
 	devfsRulesetJail     = 4 // devfsrules_jail
 	devfsRulesetJailVnet = 5 // devfsrules_jail_vnet
@@ -73,6 +73,8 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	// Parent dataset for per-task ZFS clones.
 	"zfs_parent": hclspec.NewAttr("zfs_parent", "string", false),
 
+	// The devfs(5) ruleset every jail's /dev is mounted with, in place of
+	// devfsrules_jail or devfsrules_jail_vnet.
 	"devfs_ruleset": hclspec.NewAttr("devfs_ruleset", "number", false),
 
 	"resource_limits": hclspec.NewDefault(
@@ -444,6 +446,12 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 	}
 	if tc.DevfsRuleset != 0 && !tc.MountDevfs {
 		return fmt.Errorf("devfs_ruleset is set but mount_devfs is false")
+	}
+	if tc.DevfsRuleset != 0 && !cfg.AllowPrivileged {
+		// The ruleset is all that keeps the host's devices out of a
+		// jail.
+		return fmt.Errorf("devfs_ruleset needs allow_privileged = true in the driver's plugin configuration; " +
+			"the node's own default is the plugin's devfs_ruleset")
 	}
 	for i, m := range tc.Mounts {
 		if err := m.validate(cfg); err != nil {

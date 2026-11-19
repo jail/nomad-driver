@@ -66,6 +66,12 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 		}
 	}
 
+	// A ruleset that is not loaded would fail every task, usually because
+	// devfs_load_rulesets is off.
+	if err := checkDevfsRuleset(d.ctx, d.logger, devfsRuleset(&TaskConfig{}, d.config, NetworkInherit)); err != nil {
+		return undetected("%v", err)
+	}
+
 	version := sysctlString("kern.osrelease")
 	if version == "" {
 		version = "unknown"

@@ -5,6 +5,7 @@
 package driver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -51,17 +52,17 @@ type mountSpec struct {
 // taskMounts lists the filesystems a task's jail needs, in mounting order: the
 // task's own directories before anything the job asked for, so that a job
 // cannot shadow them.
-func taskMounts(cfg *drivers.TaskConfig, tc *TaskConfig, mode string) []mountSpec {
+func taskMounts(cfg *drivers.TaskConfig, tc *TaskConfig, dcfg *Config, mode string) []mountSpec {
 	dirs := cfg.TaskDir()
 	var mounts []mountSpec
 
 	if tc.MountDevfs {
 		// The ruleset is what keeps a jail's /dev from being the
-		// host's.
+		// host's.  StartTask has checked that this one has rules in it.
 		mounts = append(mounts, mountSpec{
 			Type:     "devfs",
 			Target:   taskDevDirPath,
-			Options:  map[string]string{"ruleset": strconv.Itoa(devfsRuleset(tc, mode))},
+			Options:  map[string]string{"ruleset": strconv.Itoa(devfsRuleset(tc, dcfg, mode))},
 			Required: true,
 		})
 	}
@@ -122,6 +123,24 @@ func taskMounts(cfg *drivers.TaskConfig, tc *TaskConfig, mode string) []mountSpe
 	}
 
 	return mounts
+}
+
+// checkDevfsRuleset refuses a devfs ruleset that has no rules in it.
+//
+// The kernel does not.  Given a ruleset it does not have, devfs_ruleset_use()
+// creates it, empty, and an empty ruleset hides nothing: the jail's /dev is
+// then the host's, disks and memory included.
+func checkDevfsRuleset(ctx context.Context, logger hclog.Logger, ruleset int) error {
+	out, err := run(ctx, logger, pathDevfs, "rule", "-s", strconv.Itoa(ruleset), "show")
+	if err != nil {
+		return fmt.Errorf("reading devfs ruleset %d: %w", ruleset, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return fmt.Errorf("devfs ruleset %d has no rules loaded, so a /dev mounted with it "+
+			"would show the jail every device on the host; load it with devfs(8), "+
+			"which devfs_load_rulesets in rc.conf(5) does at boot", ruleset)
+	}
+	return nil
 }
 
 // confineMounts holds the host directories a job asked to have null-mounted

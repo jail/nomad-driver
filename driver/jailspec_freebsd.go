@@ -16,7 +16,7 @@ import (
 // jailParams builds the parameters of a task's jail.  The driver owns those
 // that identify the jail, its filesystem and its network; Validate keeps
 // jail_params off them.
-func jailParams(tc *TaskConfig, st *jailState, mode string, hostname string) ([]jail.Param, error) {
+func jailParams(tc *TaskConfig, dcfg *Config, st *jailState, mode string, hostname string) ([]jail.Param, error) {
 	params := []jail.Param{
 		{Name: jail.ParamName, Value: st.Name},
 		{Name: jail.ParamPath, Value: st.Root},
@@ -38,7 +38,7 @@ func jailParams(tc *TaskConfig, st *jailState, mode string, hostname string) ([]
 
 	// For any devfs the task mounts itself.
 	if tc.MountDevfs {
-		params = append(params, jail.IntParam("devfs_ruleset", devfsRuleset(tc, mode)))
+		params = append(params, jail.IntParam("devfs_ruleset", devfsRuleset(tc, dcfg, mode)))
 	}
 
 	netParams, err := jailNetworkParams(tc, st, mode)
@@ -129,12 +129,15 @@ func bareAddrs(specs []string) ([]string, error) {
 	return out, nil
 }
 
-// devfsRuleset picks the ruleset for a task's /dev.  It never returns 0, which
-// hides nothing.
-func devfsRuleset(tc *TaskConfig, mode string) int {
+// devfsRuleset picks the ruleset for a task's /dev: the task's own, which
+// Validate allows only where job authors are trusted, else the operator's, else
+// the stock one.  It never returns 0.
+func devfsRuleset(tc *TaskConfig, dcfg *Config, mode string) int {
 	switch {
 	case tc.DevfsRuleset != 0:
 		return tc.DevfsRuleset
+	case dcfg.DevfsRuleset != 0:
+		return dcfg.DevfsRuleset
 	case mode == NetworkVnet:
 		// devfsrules_jail_vnet also exposes bpf, for dhclient(8).
 		return devfsRulesetJailVnet

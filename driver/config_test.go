@@ -334,6 +334,16 @@ func TestTaskConfigValidate(t *testing.T) {
 			wantErr: "mount_devfs is false",
 		},
 		{
+			name:    "a task choosing its own devfs ruleset",
+			mutate:  func(tc *TaskConfig) { tc.DevfsRuleset = 5 },
+			wantErr: "devfs_ruleset needs allow_privileged",
+		},
+		{
+			name:   "a task choosing its own devfs ruleset, where job authors are trusted",
+			mutate: func(tc *TaskConfig) { tc.DevfsRuleset = 5 },
+			driver: func(c *Config) { c.AllowPrivileged = true },
+		},
+		{
 			name:    "enforce_statfs out of range",
 			mutate:  func(tc *TaskConfig) { tc.EnforceStatfs = 3 },
 			wantErr: "enforce_statfs",

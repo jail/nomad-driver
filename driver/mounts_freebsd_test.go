@@ -86,7 +86,7 @@ func TestTaskMountsOrderAndFlags(t *testing.T) {
 	tc.MountProcfs = true
 	tc.Mounts = []MountConfig{{Source: "/usr/ports", Target: "/usr/ports", Type: "nullfs", Readonly: true}}
 
-	mounts := taskMounts(cfg, tc, NetworkInherit)
+	mounts := taskMounts(cfg, tc, &Config{}, NetworkInherit)
 
 	var targets []string
 	for _, m := range mounts {
@@ -135,13 +135,13 @@ func TestTaskMountsDevfsRulesetForVnet(t *testing.T) {
 	cfg := &drivers.TaskConfig{Name: "web", AllocDir: "/var/nomad/alloc/x"}
 	tc := defaultTaskConfig()
 
-	mounts := taskMounts(cfg, tc, NetworkVnet)
+	mounts := taskMounts(cfg, tc, &Config{}, NetworkVnet)
 	if got := mounts[0].Options["ruleset"]; got != "5" {
 		t.Errorf("devfs ruleset = %q, want 5 (devfsrules_jail_vnet) for a vnet task", got)
 	}
 
 	tc.DevfsRuleset = 11
-	mounts = taskMounts(cfg, tc, NetworkVnet)
+	mounts = taskMounts(cfg, tc, &Config{}, NetworkVnet)
 	if got := mounts[0].Options["ruleset"]; got != "11" {
 		t.Errorf("devfs ruleset = %q, want the task's own 11", got)
 	}
@@ -292,7 +292,7 @@ func TestPerTaskMountPointsAreAllMounted(t *testing.T) {
 	// Every path checkRootNotInUse treats as exclusive has to be one the
 	// driver mounts for every task, or the check would never fire.
 	cfg := &drivers.TaskConfig{Name: "web", AllocDir: "/var/nomad/alloc/x"}
-	mounts := taskMounts(cfg, defaultTaskConfig(), NetworkInherit)
+	mounts := taskMounts(cfg, defaultTaskConfig(), &Config{}, NetworkInherit)
 
 	mounted := map[string]bool{}
 	for _, m := range mounts {

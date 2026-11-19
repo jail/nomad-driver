@@ -229,8 +229,8 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 			paths = append(paths, dev.TaskPath)
 		}
 		return nil, nil, fmt.Errorf("this driver cannot attach devices (%s) to a jail; "+
-			"expose devices to a jail with a devfs.rules(5) ruleset and the task's "+
-			"devfs_ruleset instead", strings.Join(paths, ", "))
+			"expose devices to a jail with a devfs.rules(5) ruleset, named in "+
+			"the plugin's devfs_ruleset", strings.Join(paths, ", "))
 	}
 
 	// This needs the filesystem, which Validate does not touch, but creates
@@ -270,7 +270,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return nil, nil, err
 	}
 
-	mounts, err := mountAll(st.Root, taskMounts(cfg, &taskConfig, mode), logger)
+	if taskConfig.MountDevfs {
+		if err := checkDevfsRuleset(d.ctx, logger, devfsRuleset(&taskConfig, d.config, mode)); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	mounts, err := mountAll(st.Root, taskMounts(cfg, &taskConfig, d.config, mode), logger)
 	st.Mounts = append(st.Mounts, mounts...)
 	if err != nil {
 		return nil, nil, err
@@ -287,7 +293,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	if hostname == "" {
 		hostname = st.Name
 	}
-	params, err := jailParams(&taskConfig, st, mode, hostname)
+	params, err := jailParams(&taskConfig, d.config, st, mode, hostname)
 	if err != nil {
 		return nil, nil, err
 	}

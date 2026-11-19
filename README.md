@@ -67,7 +67,7 @@ clone datasets skip themselves unless run as root on FreeBSD.
 | `default_network_mode` | `"inherit"` | `network_mode` for a task that states none.                                  |
 | `bridge`               | unset       | Bridge a `vnet` task's host leg joins, unless the task names one.            |
 | `zfs_parent`           | unset       | Parent dataset of per-task clones.  Required for `zfs_clone`.                |
-| `devfs_ruleset`        | unset       | `devfs.rules(5)` ruleset to use instead of the default.                      |
+| `devfs_ruleset`        | unset       | `devfs.rules(5)` ruleset for every jail's `/dev`, instead of the stock ones. |
 | `resource_limits`      | `true`      | Whether to apply `rctl(8)` rules.                                            |
 | `gc { jail }`          | `true`      | Whether to reap orphaned jails at startup.                                   |
 
@@ -166,14 +166,22 @@ not `group`: Nomad has no CNI on FreeBSD, so a group `network` block with
 | Field           | Default                | Meaning                                                                                                                         |
 | --------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `mount_devfs`   | `true`                 | Mount `devfs(5)` on `/dev`.                                                                                                     |
-| `devfs_ruleset` | `4`, or `5` for `vnet` | `devfsrules_jail`, or `devfsrules_jail_vnet`, which adds `bpf` for `dhclient(8)`.  Never 0, which hides nothing.                |
+| `devfs_ruleset` | `4`, or `5` for `vnet` | `devfsrules_jail`, or `devfsrules_jail_vnet`, which adds `bpf` for `dhclient(8)`.  Another needs `allow_privileged`.            |
 | `mount_fdescfs` | `false`                | Mount `fdescfs(5)` on `/dev/fd`.                                                                                                |
 | `mount_procfs`  | `false`                | Mount `procfs(5)` on `/proc`.                                                                                                   |
 | `mount { ... }` | none                   | Repeatable: `source`, `target`, `type` (`nullfs` by default), `readonly`, `options`.  `source` is confined by `allowed_mounts`. |
 
+The ruleset is all that keeps the host's devices out of a jail.  It is never 0,
+and never one with no rules loaded: given a ruleset it does not have, the kernel
+creates it, empty, and an empty ruleset hides nothing.  The driver checks first
+and refuses the task, and fingerprints as undetected where its default ruleset
+is not loaded, which is what `devfs_load_rulesets="NO"` in `rc.conf(5)` leads
+to.
+
 A task with a `device` block is refused.  What appears in a jail's `/dev` is
 decided by the ruleset it was mounted with, so there is nothing to translate a
-device request into.  Use `devfs_ruleset`.
+device request into.  Write a ruleset that exposes the device and name it in
+the plugin's `devfs_ruleset`.
 
 `/alloc`, `/local` and `/secrets` are mounted for every task, before anything a
 job asked for, so that a job cannot shadow them; `/secrets` is `nosuid` and
@@ -228,7 +236,8 @@ the job asked for by name fails the task.
 
 The driver fingerprints as undetected, with the reason, where it could not start
 a jail: not FreeBSD, not root, `jail_get(2)` failing, an agent in a jail whose
-`children.max` is 0, or a `vnet` default without `VIMAGE`.
+`children.max` is 0, a default `devfs` ruleset that is not loaded, or a `vnet`
+default without `VIMAGE`.
 
 ## Examples
 

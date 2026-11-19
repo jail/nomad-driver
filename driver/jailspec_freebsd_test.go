@@ -5,6 +5,10 @@
 package driver
 
 import (
+	"context"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jail/nomad-driver/jail"
@@ -27,7 +31,7 @@ func TestJailParamsCommon(t *testing.T) {
 	tc := defaultTaskConfig()
 	st := &jailState{Name: "nomad-abc12345-web", Root: "/jails/web"}
 
-	params, err := jailParams(tc, st, NetworkInherit, "web.example.com")
+	params, err := jailParams(tc, &Config{}, st, NetworkInherit, "web.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +66,7 @@ func TestJailParamsSecurelevel(t *testing.T) {
 	tc.Securelevel = 2
 	st := &jailState{Name: "j", Root: "/jails/web"}
 
-	params, err := jailParams(tc, st, NetworkInherit, "j")
+	params, err := jailParams(tc, &Config{}, st, NetworkInherit, "j")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +80,7 @@ func TestJailParamsNoDevfsRuleset(t *testing.T) {
 	tc.MountDevfs = false
 	st := &jailState{Name: "j", Root: "/jails/web"}
 
-	params, err := jailParams(tc, st, NetworkInherit, "j")
+	params, err := jailParams(tc, &Config{}, st, NetworkInherit, "j")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +191,7 @@ func TestJailParamsAllowAndPassthrough(t *testing.T) {
 	tc.JailParams = mapList{{"osrelease": "14.2-RELEASE", "allow.mlock": "true"}}
 	st := &jailState{Name: "j", Root: "/jails/web"}
 
-	params, err := jailParams(tc, st, NetworkInherit, "j")
+	params, err := jailParams(tc, &Config{}, st, NetworkInherit, "j")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +219,7 @@ func TestJailParamsAreAcceptedByTheKernel(t *testing.T) {
 	tc.Securelevel = 1
 	st := &jailState{Name: "nomadjailspectest", Root: root}
 
-	params, err := jailParams(tc, st, NetworkInherit, "spec.test")
+	params, err := jailParams(tc, &Config{}, st, NetworkInherit, "spec.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +252,7 @@ func TestJailParamsVnetAcceptedByTheKernel(t *testing.T) {
 	tc.NetworkMode = NetworkVnet
 	st := &jailState{Name: "nomadjailvnettest", Root: root}
 
-	params, err := jailParams(tc, st, NetworkVnet, "vnet.test")
+	params, err := jailParams(tc, &Config{}, st, NetworkVnet, "vnet.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,15 +265,81 @@ func TestJailParamsVnetAcceptedByTheKernel(t *testing.T) {
 
 func TestDevfsRuleset(t *testing.T) {
 	tc := defaultTaskConfig()
-	if got := devfsRuleset(tc, NetworkInherit); got != devfsRulesetJail {
+	if got := devfsRuleset(tc, &Config{}, NetworkInherit); got != devfsRulesetJail {
 		t.Errorf("ruleset = %d, want %d", got, devfsRulesetJail)
 	}
-	if got := devfsRuleset(tc, NetworkVnet); got != devfsRulesetJailVnet {
+	if got := devfsRuleset(tc, &Config{}, NetworkVnet); got != devfsRulesetJailVnet {
 		t.Errorf("ruleset = %d, want %d for a vnet task", got, devfsRulesetJailVnet)
 	}
+	// The operator's ruleset replaces the stock ones.
+	operator := &Config{DevfsRuleset: 10}
+	for _, mode := range []string{NetworkInherit, NetworkVnet} {
+		if got := devfsRuleset(tc, operator, mode); got != 10 {
+			t.Errorf("ruleset = %d for a %s task, want the operator's 10", got, mode)
+		}
+	}
+
+	// A task's own, where it is allowed one, wins over both.
 	tc.DevfsRuleset = 42
-	if got := devfsRuleset(tc, NetworkVnet); got != 42 {
-		t.Errorf("ruleset = %d, want the task's own 42", got)
+	for _, dcfg := range []*Config{{}, operator} {
+		if got := devfsRuleset(tc, dcfg, NetworkVnet); got != 42 {
+			t.Errorf("ruleset = %d, want the task's own 42", got)
+		}
+	}
+}
+
+// TestCheckDevfsRuleset is the regression test for mounting a jail's /dev with
+// a ruleset the kernel does not have.
+func TestCheckDevfsRuleset(t *testing.T) {
+	d := newTestDriver(t)
+
+	// Asking about a ruleset must not be what creates it.
+	const unloaded = 64999
+	for i := range 2 {
+		err := checkDevfsRuleset(d.ctx, d.logger, unloaded)
+		if err == nil || !strings.Contains(err.Error(), "no rules loaded") {
+			t.Fatalf("check %d of ruleset %d: err = %v, want it refused as empty", i+1, unloaded, err)
+		}
+	}
+
+	if err := checkDevfsRuleset(d.ctx, d.logger, devfsRulesetJail); err != nil {
+		t.Skipf("the stock jail ruleset is not loaded on this host: %v", err)
+	}
+}
+
+// TestUnloadedRulesetHidesNothing pins down the kernel behaviour
+// checkDevfsRuleset exists for.
+func TestUnloadedRulesetHidesNothing(t *testing.T) {
+	requireRoot(t)
+	d := newTestDriver(t)
+	if err := checkDevfsRuleset(d.ctx, d.logger, devfsRulesetJail); err != nil {
+		t.Skipf("the stock jail ruleset is not loaded on this host: %v", err)
+	}
+
+	count := func(ruleset int) int {
+		t.Helper()
+		dir := t.TempDir()
+		if err := jail.MountDevfs(dir, ruleset, 0); err != nil {
+			t.Fatalf("mounting devfs with ruleset %d: %v", ruleset, err)
+		}
+		defer func() { _ = jail.Unmount(dir, jail.MountForce) }()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+
+	const unloaded = 64998
+	restricted, open := count(devfsRulesetJail), count(unloaded)
+	// Mounting with it is what creates it.
+	t.Cleanup(func() {
+		_, _ = run(context.Background(), d.logger, pathDevfs, "rule", "-s", strconv.Itoa(unloaded), "delset")
+	})
+
+	if open <= restricted {
+		t.Errorf("an unloaded ruleset showed %d nodes and the jail ruleset %d; "+
+			"expected the unloaded one to hide nothing", open, restricted)
 	}
 }
 

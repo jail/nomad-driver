@@ -8,6 +8,7 @@ package driver
 // on the agent's PATH.
 const (
 	pathJexec    = "/usr/sbin/jexec"
+	pathDevfs    = "/sbin/devfs"
 	pathIfconfig = "/sbin/ifconfig"
 	pathRoute    = "/sbin/route"
 	pathZFS      = "/sbin/zfs"
