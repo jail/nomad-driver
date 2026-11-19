@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/jail/nomad-driver/jail"
@@ -301,5 +302,122 @@ func TestPerTaskMountPointsAreAllMounted(t *testing.T) {
 		if !mounted[p] {
 			t.Errorf("%q is treated as per-task but is not mounted for every task", p)
 		}
+	}
+}
+
+// TestConfineMounts is the regression test for a job null-mounting any part of
+// the host into its jail.
+func TestConfineMounts(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, secret := filepath.Join(base, "data"), filepath.Join(base, "secret")
+	for _, dir := range []string{data, secret} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A link inside what the job is allowed, to what it is not.
+	escape := filepath.Join(data, "escape")
+	if err := os.Symlink(secret, escape); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(data, "inside")
+	if err := os.Symlink(data, inside); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{AllowedMounts: []string{data}}
+	tests := []struct {
+		name    string
+		cfg     *Config
+		mount   MountConfig
+		want    string
+		wantErr string
+	}{
+		{name: "an allowed directory", cfg: cfg, mount: MountConfig{Source: data, Target: "/data"}, want: data},
+		{
+			name: "a directory that is not allowed", cfg: cfg,
+			mount: MountConfig{Source: secret, Target: "/s"}, wantErr: "allowed_mounts",
+		},
+		{
+			name: "the host's root", cfg: cfg,
+			mount: MountConfig{Source: "/", Target: "/host"}, wantErr: "allowed_mounts",
+		},
+		{
+			name: "a link out of an allowed directory", cfg: cfg,
+			mount: MountConfig{Source: escape, Target: "/s"}, wantErr: "allowed_mounts",
+		},
+		{
+			name: "a link within an allowed directory is mounted by its real path", cfg: cfg,
+			mount: MountConfig{Source: inside, Target: "/data"}, want: data,
+		},
+		{
+			name: "nothing allowed", cfg: &Config{},
+			mount: MountConfig{Source: data, Target: "/data"}, wantErr: "sets no allowed_mounts",
+		},
+		{
+			name: "nothing listed, job authors trusted", cfg: &Config{AllowPrivileged: true},
+			mount: MountConfig{Source: secret, Target: "/s"}, want: secret,
+		},
+		{
+			name: "a source that does not exist", cfg: cfg,
+			mount: MountConfig{Source: filepath.Join(data, "nope"), Target: "/n"}, wantErr: "no such file",
+		},
+		{
+			name: "a tmpfs has no source to confine", cfg: &Config{},
+			mount: MountConfig{Type: "tmpfs", Target: "/tmp"}, want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := confineMounts([]MountConfig{tc.mount}, tc.cfg)
+			checkErr(t, err, tc.wantErr)
+			if tc.wantErr != "" {
+				return
+			}
+			if got[0].Source != tc.want {
+				t.Errorf("source = %q, want %q", got[0].Source, tc.want)
+			}
+		})
+	}
+}
+
+// TestMountAllCannotBeGivenAnotherSource checks that even if an option naming
+// another source reached mountAll, the source that was checked is the one
+// mounted.
+func TestMountAllCannotBeGivenAnotherSource(t *testing.T) {
+	requireRoot(t)
+
+	root, source, other := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "checked"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "unchecked"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	done, err := mountAll(root, []mountSpec{{
+		Type:    "nullfs",
+		Source:  source,
+		Target:  "/m",
+		Options: map[string]string{"target": other},
+	}}, hclog.NewNullLogger())
+	t.Cleanup(func() {
+		for _, m := range done {
+			_ = jail.Unmount(m, jail.MountForce)
+		}
+	})
+	if err != nil {
+		t.Fatalf("mountAll: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "m", "checked")); err != nil {
+		t.Errorf("the checked source is not what was mounted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "m", "unchecked")); err == nil {
+		t.Error("an option replaced the source that had been checked")
 	}
 }

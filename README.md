@@ -60,14 +60,33 @@ clone datasets skip themselves unless run as root on FreeBSD.
 | Field                  | Default     | Meaning                                                                      |
 | ---------------------- | ----------- | ---------------------------------------------------------------------------- |
 | `enabled`              | `true`      | Whether the driver fingerprints at all.                                      |
-| `allowed_paths`        | unset       | Directories a job's `path` has to be at or below.  Unset allows any.         |
-| `allow_privileged`     | `false`     | Whether jobs may use `allow`, `jail_params` or `extra_rctl`.                 |
+| `allowed_paths`        | unset       | Directories a job's `path` has to be at or below.                            |
+| `allowed_mounts`       | unset       | Directories the `source` of a job's `mount` has to be at or below.           |
+| `allowed_datasets`     | unset       | Datasets a job's `zfs_clone` has to be a snapshot of, or of a descendant of. |
+| `allow_privileged`     | `false`     | Says job authors are trusted with root on the node; see below.               |
 | `default_network_mode` | `"inherit"` | `network_mode` for a task that states none.                                  |
 | `bridge`               | unset       | Bridge a `vnet` task's host leg joins, unless the task names one.            |
 | `zfs_parent`           | unset       | Parent dataset of per-task clones.  Required for `zfs_clone`.                |
 | `devfs_ruleset`        | unset       | `devfs.rules(5)` ruleset to use instead of the default.                      |
 | `resource_limits`      | `true`      | Whether to apply `rctl(8)` rules.                                            |
 | `gc { jail }`          | `true`      | Whether to reap orphaned jails at startup.                                   |
+
+### What a job can reach
+
+A job names things on the host: the directory its jail is rooted at, directories
+to null-mount into it, a snapshot to clone its root from.  Each is held against
+one of the `allowed_*` lists, and a list that is not set covers nothing.
+
+Paths are compared as real paths, with symbolic links resolved on both sides.
+
+`allow_privileged = true` says that job authors are trusted with root on the
+node, which is what the settings it gates amount to: `allow`, `jail_params`,
+`extra_rctl`, mount options beyond sizing a `tmpfs`, and an `enforce_statfs`
+below 2.  It also lifts any `allowed_*` list that is not set; a list that is set
+still binds.
+
+Nomad's `volume_mount` is not held against `allowed_mounts`: the operator
+defined the volume.
 
 ## Task configuration
 
@@ -86,8 +105,8 @@ The task's `user` is resolved in the jail, from its own `passwd` database, by
 
 | Field             | Default | Meaning                                                                                   |
 | ----------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `path`            |         | An existing directory, used as the jail root.                                             |
-| `zfs_clone`       |         | A `dataset@snapshot` to clone per task.  Excludes `path`.                                 |
+| `path`            |         | An existing directory, used as the jail root, confined by `allowed_paths`.                |
+| `zfs_clone`       |         | A `dataset@snapshot` to clone per task, confined by `allowed_datasets`.  Excludes `path`. |
 | `readonly_rootfs` | `false` | Mount the image read-only.                                                                |
 
 One of `path` and `zfs_clone` is required.
@@ -150,7 +169,7 @@ not `group`: Nomad has no CNI on FreeBSD, so a group `network` block with
 | `devfs_ruleset` | `4`, or `5` for `vnet` | `devfsrules_jail`, or `devfsrules_jail_vnet`, which adds `bpf` for `dhclient(8)`.  Never 0, which hides nothing.                |
 | `mount_fdescfs` | `false`                | Mount `fdescfs(5)` on `/dev/fd`.                                                                                                |
 | `mount_procfs`  | `false`                | Mount `procfs(5)` on `/proc`.                                                                                                   |
-| `mount { ... }` | none                   | Repeatable: `source`, `target`, `type` (`nullfs` by default), `readonly`, `options`.                                            |
+| `mount { ... }` | none                   | Repeatable: `source`, `target`, `type` (`nullfs` by default), `readonly`, `options`.  `source` is confined by `allowed_mounts`. |
 
 A task with a `device` block is refused.  What appears in a jail's `/dev` is
 decided by the ruleset it was mounted with, so there is nothing to translate a
@@ -170,7 +189,7 @@ Nomad's `dns` block is written to `/etc/resolv.conf` in the jail.
 
 | Field            | Default    | Meaning                                                                                        |
 | ---------------- | ---------- | ---------------------------------------------------------------------------------------------- |
-| `enforce_statfs` | `2`        | The kernel's default: the task sees only its own filesystems.                                  |
+| `enforce_statfs` | `2`        | The kernel's default: the task sees only its own filesystems.  Lower needs `allow_privileged`. |
 | `children_max`   | `0`        | No jails within the jail.                                                                      |
 | `securelevel`    | the host's | `-1` to `3`.  Sent only when set.                                                              |
 | `allow`          | none       | `allow.*` flags, unprefixed: `["mount", "raw_sockets"]`.  Needs `allow_privileged`.            |

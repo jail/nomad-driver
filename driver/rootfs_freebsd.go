@@ -78,9 +78,8 @@ func resolveRootfsDir(path string, dcfg *Config) (string, error) {
 	if root == "/" {
 		return "", fmt.Errorf("jail root %s resolves to the host's root directory", path)
 	}
-	// Again, as resolved.
-	if err := checkAllowedPath(root, dcfg.AllowedPaths); err != nil {
-		return "", err
+	if err := dcfg.pathAllowed("allowed_paths", root, dcfg.AllowedPaths); err != nil {
+		return "", fmt.Errorf("path: %w", err)
 	}
 	return root, nil
 }

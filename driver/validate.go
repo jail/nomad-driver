@@ -85,18 +85,56 @@ func validateAliasAddr(s string) error {
 
 // validInterfaceName reports whether s could name a network interface.  The
 // names go to ifconfig(8), so nothing it could read as anything else is
-// allowed.
+// allowed, a leading "-" included.
 func validInterfaceName(s string) bool {
-	if s == "" || len(s) > 15 {
+	if s == "" || len(s) > 15 || !isAlnum(rune(s[0])) {
 		return false
 	}
 	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '.' || r == '_' || r == '-':
-		default:
+		if !isAlnum(r) && r != '.' && r != '_' && r != '-' {
 			return false
 		}
 	}
 	return true
+}
+
+func isAlnum(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+}
+
+// validDatasetName reports whether s is a ZFS dataset name: components of
+// letters, digits and "_-.:" joined by "/", the pool starting with a letter.
+// The names go to zfs(8).
+func validDatasetName(s string) bool {
+	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') {
+		return false
+	}
+	for _, component := range strings.Split(s, "/") {
+		if !validDatasetComponent(component) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDatasetComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !isAlnum(r) && r != '_' && r != '-' && r != '.' && r != ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// snapshotDataset returns the dataset that dataset@snapshot is a snapshot of,
+// and false if s is not a well-formed snapshot name.
+func snapshotDataset(s string) (string, bool) {
+	dataset, snapshot, found := strings.Cut(s, "@")
+	if !found || !validDatasetName(dataset) || !validDatasetComponent(snapshot) {
+		return "", false
+	}
+	return dataset, true
 }

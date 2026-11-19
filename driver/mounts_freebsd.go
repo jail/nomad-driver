@@ -124,6 +124,29 @@ func taskMounts(cfg *drivers.TaskConfig, tc *TaskConfig, mode string) []mountSpe
 	return mounts
 }
 
+// confineMounts holds the host directories a job asked to have null-mounted
+// against allowed_mounts.  It returns the mounts with each source replaced by
+// its real path, so that what is mounted is what was checked.  A volume_mount
+// does not come this way: the operator defined the volume.
+func confineMounts(mounts []MountConfig, dcfg *Config) ([]MountConfig, error) {
+	out := make([]MountConfig, len(mounts))
+	for i, m := range mounts {
+		out[i] = m
+		if m.Type != "" && m.Type != "nullfs" {
+			continue
+		}
+		source, err := filepath.EvalSymlinks(m.Source)
+		if err != nil {
+			return nil, fmt.Errorf("mount[%d]: source: %w", i, err)
+		}
+		if err := dcfg.pathAllowed("allowed_mounts", source, dcfg.AllowedMounts); err != nil {
+			return nil, fmt.Errorf("mount[%d]: source: %w", i, err)
+		}
+		out[i].Source = source
+	}
+	return out, nil
+}
+
 // mountAll mounts a task's filesystems under root, creating their mount points.
 // It returns what it mounted, in order, so that a failure part way can be
 // undone.
@@ -160,10 +183,13 @@ func mountAll(root string, specs []mountSpec, logger hclog.Logger) ([]string, er
 
 		opts := spec.Options
 		if spec.Type == "nullfs" {
-			opts = map[string]string{"target": spec.Source}
+			// "target" is what nullfs mounts.  It is set last, so
+			// that no option can name another.
+			opts = make(map[string]string, len(spec.Options)+1)
 			for k, v := range spec.Options {
 				opts[k] = v
 			}
+			opts["target"] = spec.Source
 		}
 		if err := jail.Mount(spec.Type, target, spec.Flags, opts); err != nil {
 			return done, err

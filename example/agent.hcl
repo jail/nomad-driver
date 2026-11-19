@@ -23,9 +23,12 @@ client {
 # and ignores a block it cannot match; from 1.11 it does not load the plugin.
 plugin "jail-nomad-driver" {
   config {
-    # Where a job may root a jail.  Leave it unset only where every job author
-    # is trusted with root on the node.
-    allowed_paths = ["/jails"]
+    # What a job may name on the host: where a jail may be rooted, what may be
+    # null-mounted into one, and what a root may be cloned from.  A list that is
+    # not set allows nothing.
+    allowed_paths    = ["/jails"]
+    allowed_mounts   = ["/usr/share"]
+    allowed_datasets = ["zroot/jails/base"]
 
     # Parent of the clones made for zfs_clone.
     zfs_parent = "zroot/jails/nomad"
@@ -33,8 +36,9 @@ plugin "jail-nomad-driver" {
     # The bridge a vnet task's host leg joins.
     bridge = "nomadbr0"
 
-    # Jobs may not raise allow.* flags, set raw jail parameters or add rctl(8)
-    # rules unless this is on.
+    # Whether job authors are trusted with root on the node.  It gates the
+    # allow.* flags, raw jail parameters and extra rctl(8) rules, and lifts the
+    # lists above where they are not set.
     allow_privileged = false
 
     # How a jail is networked when the job does not say.

@@ -233,6 +233,14 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 			"devfs_ruleset instead", strings.Join(paths, ", "))
 	}
 
+	// This needs the filesystem, which Validate does not touch, but creates
+	// nothing.
+	jobMounts, err := confineMounts(taskConfig.Mounts, d.config)
+	if err != nil {
+		return nil, nil, err
+	}
+	taskConfig.Mounts = jobMounts
+
 	mode := d.networkMode(cfg, &taskConfig)
 	logger := d.logger.With("task_name", cfg.Name, "alloc_id", cfg.AllocID)
 	logger.Info("starting task", "network_mode", mode, "command", taskConfig.Command)

@@ -47,11 +47,16 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewLiteral("true"),
 	),
 
-	// Confines a job's choice of jail root.  Unset allows any.
-	"allowed_paths": hclspec.NewAttr("allowed_paths", "list(string)", false),
+	// What a job may name on the host: where its jail is rooted, what it
+	// null-mounts into it, and what it clones a root from.  A list that is
+	// not set allows nothing, unless allow_privileged is.
+	"allowed_paths":    hclspec.NewAttr("allowed_paths", "list(string)", false),
+	"allowed_mounts":   hclspec.NewAttr("allowed_mounts", "list(string)", false),
+	"allowed_datasets": hclspec.NewAttr("allowed_datasets", "list(string)", false),
 
-	// Gates the settings that can give a task privileges over the host:
-	// allow, jail_params and extra_rctl.
+	// Job authors are trusted with root on the node.  Gates allow,
+	// jail_params, extra_rctl and mount options, and lifts the allowed_*
+	// lists that are not set.
 	"allow_privileged": hclspec.NewDefault(
 		hclspec.NewAttr("allow_privileged", "bool", false),
 		hclspec.NewLiteral("false"),
@@ -174,6 +179,8 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 type Config struct {
 	Enabled            bool     `codec:"enabled"`
 	AllowedPaths       []string `codec:"allowed_paths"`
+	AllowedMounts      []string `codec:"allowed_mounts"`
+	AllowedDatasets    []string `codec:"allowed_datasets"`
 	AllowPrivileged    bool     `codec:"allow_privileged"`
 	DefaultNetworkMode string   `codec:"default_network_mode"`
 	Bridge             string   `codec:"bridge"`
@@ -273,13 +280,77 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("allowed_paths: %q is not an absolute path", p)
 		}
 	}
+	for _, p := range c.AllowedMounts {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("allowed_mounts: %q is not an absolute path", p)
+		}
+	}
+	for _, ds := range c.AllowedDatasets {
+		if !validDatasetName(ds) {
+			return fmt.Errorf("allowed_datasets: %q is not a dataset name", ds)
+		}
+	}
 	if c.DevfsRuleset < 0 {
 		return fmt.Errorf("devfs_ruleset: %d is negative", c.DevfsRuleset)
 	}
-	if c.ZFSParent != "" && strings.HasPrefix(c.ZFSParent, "/") {
-		return fmt.Errorf("zfs_parent: %q looks like a path, want a dataset name", c.ZFSParent)
+	if c.ZFSParent != "" && !validDatasetName(c.ZFSParent) {
+		return fmt.Errorf("zfs_parent: %q is not a dataset name", c.ZFSParent)
 	}
 	return nil
+}
+
+// covers reports whether a job may use anything of the kind an allowed_* list
+// confines.  A list that is not set covers nothing, unless job authors are
+// trusted with the node.
+func (c *Config) covers(option string, allowed []string) error {
+	if len(allowed) > 0 || c.AllowPrivileged {
+		return nil
+	}
+	return fmt.Errorf("the driver's plugin configuration sets no %s, "+
+		"so there is nothing on the host a job may name here", option)
+}
+
+// pathAllowed confines a host path a job named to the directories the operator
+// listed.  Both sides are compared as real paths, so that a symbolic link is no
+// way across, and the path has to exist.
+func (c *Config) pathAllowed(option, path string, allowed []string) error {
+	if err := c.covers(option, allowed); err != nil {
+		return err
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	for _, a := range allowed {
+		if ra, err := filepath.EvalSymlinks(a); err == nil {
+			a = ra
+		}
+		if pathWithin(real, filepath.Clean(a)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q is not under any of the driver's %s %v", path, option, allowed)
+}
+
+// datasetAllowed confines the dataset a job clones from to those the operator
+// listed and their descendants.
+func (c *Config) datasetAllowed(dataset string) error {
+	if err := c.covers("allowed_datasets", c.AllowedDatasets); err != nil {
+		return err
+	}
+	if len(c.AllowedDatasets) == 0 {
+		return nil
+	}
+	for _, a := range c.AllowedDatasets {
+		if dataset == a || strings.HasPrefix(dataset, a+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q is not under any of the driver's allowed_datasets %v",
+		dataset, c.AllowedDatasets)
 }
 
 func badNetworkMode(mode string) error {
@@ -314,16 +385,22 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 		return fmt.Errorf("path: may not be the host's root directory")
 	}
 	if tc.ZFSClone != "" {
-		if !strings.Contains(tc.ZFSClone, "@") {
+		dataset, ok := snapshotDataset(tc.ZFSClone)
+		if !ok {
 			return fmt.Errorf("zfs_clone: %q is not a snapshot (want dataset@snapshot)", tc.ZFSClone)
 		}
 		if cfg.ZFSParent == "" {
 			return fmt.Errorf("zfs_clone needs zfs_parent set in the driver's plugin configuration")
 		}
+		if err := cfg.datasetAllowed(dataset); err != nil {
+			return fmt.Errorf("zfs_clone: %w", err)
+		}
 	}
 	if tc.Path != "" {
-		if err := checkAllowedPath(tc.Path, cfg.AllowedPaths); err != nil {
-			return err
+		// Whether this path is covered takes the filesystem to answer;
+		// see resolveRootfsDir.
+		if err := cfg.covers("allowed_paths", cfg.AllowedPaths); err != nil {
+			return fmt.Errorf("path: %w", err)
 		}
 	}
 
@@ -369,13 +446,19 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 		return fmt.Errorf("devfs_ruleset is set but mount_devfs is false")
 	}
 	for i, m := range tc.Mounts {
-		if err := m.validate(); err != nil {
+		if err := m.validate(cfg); err != nil {
 			return fmt.Errorf("mount[%d]: %w", i, err)
 		}
 	}
 
 	if tc.EnforceStatfs < 0 || tc.EnforceStatfs > 2 {
 		return fmt.Errorf("enforce_statfs: %d is not 0, 1 or 2", tc.EnforceStatfs)
+	}
+	if tc.EnforceStatfs < 2 && !cfg.AllowPrivileged {
+		// Anything below 2 shows the task mount points outside its
+		// jail.
+		return fmt.Errorf("enforce_statfs = %d needs allow_privileged = true in the driver's plugin configuration",
+			tc.EnforceStatfs)
 	}
 	if tc.Securelevel < -1 || tc.Securelevel > 3 {
 		return fmt.Errorf("securelevel: %d is not between -1 and 3", tc.Securelevel)
@@ -502,44 +585,80 @@ func (v *VnetConfig) validate(cfg *Config) error {
 	return nil
 }
 
-func (m *MountConfig) validate() error {
+// reservedMountOptions are the nmount(2) options the driver sets itself.  A job
+// that could set "target" or "fspath" would choose what is mounted, or where,
+// after it had been checked.
+var reservedMountOptions = map[string]bool{
+	"fstype": true,
+	"fspath": true,
+	"target": true,
+	"from":   true,
+	"errmsg": true,
+	"update": true,
+	"export": true,
+}
+
+// jobMountOptions are the options a job may pass without allow_privileged:
+// those that size and own a tmpfs(5).
+var jobMountOptions = map[string]map[string]bool{
+	"tmpfs": {
+		"size":        true,
+		"inodes":      true,
+		"maxfilesize": true,
+		"mode":        true,
+		"uid":         true,
+		"gid":         true,
+	},
+}
+
+func (m *MountConfig) validate(cfg *Config) error {
 	if !filepath.IsAbs(m.Target) {
 		return fmt.Errorf("target: %q must be an absolute path inside the jail", m.Target)
 	}
 	if filepath.Clean(m.Target) == "/" {
 		return fmt.Errorf("target: may not be the jail root")
 	}
-	switch m.Type {
-	case "", "nullfs":
+
+	fstype := m.Type
+	if fstype == "" {
+		fstype = "nullfs"
+	}
+	switch fstype {
+	case "nullfs":
 		if m.Source == "" {
 			return fmt.Errorf("source is required for a nullfs mount")
 		}
 		if !filepath.IsAbs(m.Source) {
 			return fmt.Errorf("source: %q is not an absolute path on the host", m.Source)
 		}
-	case "devfs", "fdescfs", "procfs", "linprocfs", "linsysfs", "tmpfs":
-		if m.Source != "" {
-			return fmt.Errorf("source is not used by a %s mount", m.Type)
+		// Whether this source is covered takes the filesystem to
+		// answer; see confineMounts.
+		if err := cfg.covers("allowed_mounts", cfg.AllowedMounts); err != nil {
+			return fmt.Errorf("source: %w", err)
 		}
+	case "fdescfs", "procfs", "linprocfs", "linsysfs", "tmpfs":
+		if m.Source != "" {
+			return fmt.Errorf("source is not used by a %s mount", fstype)
+		}
+	case "devfs":
+		// A devfs(5) mounted from the host with no ruleset is the
+		// host's /dev.
+		return fmt.Errorf("type: a jail's devfs is mounted by the driver; see mount_devfs")
 	default:
 		return fmt.Errorf("type: %q is not a filesystem this driver mounts", m.Type)
 	}
-	return nil
-}
 
-// checkAllowedPath confines a job's jail root to the directories the operator
-// listed.  An empty list allows any.
-func checkAllowedPath(path string, allowed []string) error {
-	if len(allowed) == 0 {
-		return nil
-	}
-	clean := filepath.Clean(path)
-	for _, a := range allowed {
-		if pathWithin(clean, filepath.Clean(a)) {
-			return nil
+	for name := range m.Options.merged() {
+		switch {
+		case reservedMountOptions[name]:
+			return fmt.Errorf("options: %q is set by the driver", name)
+		case jobMountOptions[fstype][name], cfg.AllowPrivileged:
+		default:
+			return fmt.Errorf("options: %q on a %s mount needs allow_privileged = true "+
+				"in the driver's plugin configuration", name, fstype)
 		}
 	}
-	return fmt.Errorf("path: %q is not under any of the driver's allowed_paths %v", path, allowed)
+	return nil
 }
 
 // pathWithin reports whether path is root or below it, by whole components:

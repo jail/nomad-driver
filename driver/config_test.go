@@ -5,6 +5,8 @@
 package driver
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,9 +26,12 @@ func defaultTaskConfig() *TaskConfig {
 	}
 }
 
+// defaultConfig is the plugin configuration of an operator who lets jobs root
+// their jails under /jails, and nothing else.
 func defaultConfig() *Config {
 	return &Config{
 		Enabled:            true,
+		AllowedPaths:       []string{"/jails"},
 		DefaultNetworkMode: NetworkInherit,
 		ResourceLimits:     true,
 		GC:                 GCConfig{Jail: true},
@@ -54,6 +59,23 @@ func TestConfigValidate(t *testing.T) {
 			name:    "zfs_parent given as a path",
 			mutate:  func(c *Config) { c.ZFSParent = "/zroot/jails" },
 			wantErr: "dataset name",
+		},
+		{
+			name:    "relative allowed mount",
+			mutate:  func(c *Config) { c.AllowedMounts = []string{"data"} },
+			wantErr: "absolute path",
+		},
+		{
+			name:    "allowed dataset given as a path",
+			mutate:  func(c *Config) { c.AllowedDatasets = []string{"/zroot/jails"} },
+			wantErr: "dataset name",
+		},
+		{
+			name: "all three lists",
+			mutate: func(c *Config) {
+				c.AllowedMounts = []string{"/data"}
+				c.AllowedDatasets = []string{"zroot/jails/base"}
+			},
 		},
 		{
 			name:   "vnet default is allowed",
@@ -131,23 +153,78 @@ func TestTaskConfigValidate(t *testing.T) {
 				tc.Path = ""
 				tc.ZFSClone = "zroot/jails/base@ready"
 			},
-			driver: func(c *Config) { c.ZFSParent = "zroot/jails/nomad" },
+			driver: func(c *Config) {
+				c.ZFSParent = "zroot/jails/nomad"
+				c.AllowedDatasets = []string{"zroot/jails/base"}
+			},
 		},
 		{
-			name:    "path outside allowed_paths",
-			driver:  func(c *Config) { c.AllowedPaths = []string{"/zroot/jails"} },
-			wantErr: "allowed_paths",
+			name: "zfs_clone with no allowed_datasets",
+			mutate: func(tc *TaskConfig) {
+				tc.Path = ""
+				tc.ZFSClone = "zroot/jails/base@ready"
+			},
+			driver:  func(c *Config) { c.ZFSParent = "zroot/jails/nomad" },
+			wantErr: "sets no allowed_datasets",
 		},
 		{
-			name:   "path inside allowed_paths",
-			mutate: func(tc *TaskConfig) { tc.Path = "/zroot/jails/www" },
-			driver: func(c *Config) { c.AllowedPaths = []string{"/zroot/jails"} },
+			name: "zfs_clone of a dataset the operator did not list",
+			mutate: func(tc *TaskConfig) {
+				tc.Path = ""
+				tc.ZFSClone = "zroot/ROOT/default@backup"
+			},
+			driver: func(c *Config) {
+				c.ZFSParent = "zroot/jails/nomad"
+				c.AllowedDatasets = []string{"zroot/jails/base"}
+			},
+			wantErr: "allowed_datasets",
 		},
 		{
-			name:    "allowed_paths is not a string prefix match",
-			mutate:  func(tc *TaskConfig) { tc.Path = "/zroot/jails-evil/www" },
-			driver:  func(c *Config) { c.AllowedPaths = []string{"/zroot/jails"} },
-			wantErr: "allowed_paths",
+			name: "allowed_datasets is not a string prefix match",
+			mutate: func(tc *TaskConfig) {
+				tc.Path = ""
+				tc.ZFSClone = "zroot/jails/base-evil@ready"
+			},
+			driver: func(c *Config) {
+				c.ZFSParent = "zroot/jails/nomad"
+				c.AllowedDatasets = []string{"zroot/jails/base"}
+			},
+			wantErr: "allowed_datasets",
+		},
+		{
+			name: "zfs_clone of a child of an allowed dataset",
+			mutate: func(tc *TaskConfig) {
+				tc.Path = ""
+				tc.ZFSClone = "zroot/jails/base/14.3@ready"
+			},
+			driver: func(c *Config) {
+				c.ZFSParent = "zroot/jails/nomad"
+				c.AllowedDatasets = []string{"zroot/jails/base"}
+			},
+		},
+		{
+			name: "zfs_clone that zfs(8) would read as an option",
+			mutate: func(tc *TaskConfig) {
+				tc.Path = ""
+				tc.ZFSClone = "-omountpoint=/etc@x"
+			},
+			driver: func(c *Config) {
+				c.ZFSParent = "zroot/jails/nomad"
+				c.AllowPrivileged = true
+			},
+			wantErr: "not a snapshot",
+		},
+		{
+			name:    "path with no allowed_paths",
+			driver:  func(c *Config) { c.AllowedPaths = nil },
+			wantErr: "sets no allowed_paths",
+		},
+		{
+			name: "path with no allowed_paths, where job authors are trusted",
+			driver: func(c *Config) {
+				c.AllowedPaths = nil
+				c.AllowPrivileged = true
+			},
 		},
 		{
 			name:    "addresses without alias mode",
@@ -308,6 +385,71 @@ func TestTaskConfigValidate(t *testing.T) {
 			wantErr: "jail root",
 		},
 		{
+			name: "host mount with no allowed_mounts",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{Source: "/etc", Target: "/host-etc"}}
+			},
+			wantErr: "sets no allowed_mounts",
+		},
+		{
+			name: "host mount with allowed_mounts",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{Source: "/data/www", Target: "/data"}}
+			},
+			driver: func(c *Config) { c.AllowedMounts = []string{"/data"} },
+		},
+		{
+			name: "a second devfs",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{Target: "/dev2", Type: "devfs"}}
+			},
+			driver:  func(c *Config) { c.AllowPrivileged = true },
+			wantErr: "mounted by the driver",
+		},
+		{
+			name: "an option that would name another source",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{
+					Source: "/data/www", Target: "/data",
+					Options: mapList{{"target": "/"}},
+				}}
+			},
+			driver: func(c *Config) {
+				c.AllowedMounts = []string{"/data"}
+				c.AllowPrivileged = true
+			},
+			wantErr: `"target" is set by the driver`,
+		},
+		{
+			name: "sizing a tmpfs",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{
+					Target: "/tmp", Type: "tmpfs",
+					Options: mapList{{"size": "64m", "mode": "1777"}},
+				}}
+			},
+		},
+		{
+			name: "any other mount option",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{
+					Target: "/tmp", Type: "tmpfs",
+					Options: mapList{{"nosymfollow": ""}},
+				}}
+			},
+			wantErr: "needs allow_privileged",
+		},
+		{
+			name: "any other mount option, where job authors are trusted",
+			mutate: func(tc *TaskConfig) {
+				tc.Mounts = []MountConfig{{
+					Target: "/tmp", Type: "tmpfs",
+					Options: mapList{{"nosymfollow": ""}},
+				}}
+			},
+			driver: func(c *Config) { c.AllowPrivileged = true },
+		},
+		{
 			name: "mount of an unsupported filesystem",
 			mutate: func(tc *TaskConfig) {
 				tc.Mounts = []MountConfig{{Target: "/mnt", Type: "nfs"}}
@@ -320,6 +462,16 @@ func TestTaskConfigValidate(t *testing.T) {
 				tc.Mounts = []MountConfig{{Source: "/tmp", Target: "mnt"}}
 			},
 			wantErr: "absolute path",
+		},
+		{
+			name:    "seeing the host's mount table",
+			mutate:  func(tc *TaskConfig) { tc.EnforceStatfs = 1 },
+			wantErr: "needs allow_privileged",
+		},
+		{
+			name:   "seeing the host's mount table, where job authors are trusted",
+			mutate: func(tc *TaskConfig) { tc.EnforceStatfs = 0 },
+			driver: func(c *Config) { c.AllowPrivileged = true },
 		},
 		{
 			name: "valid tmpfs mount",
@@ -377,9 +529,114 @@ func TestPathWithin(t *testing.T) {
 	}
 }
 
-func TestCheckAllowedPathEmptyListAllowsAnything(t *testing.T) {
-	if err := checkAllowedPath("/anywhere/at/all", nil); err != nil {
-		t.Errorf("an empty allowed_paths should allow anything, got %v", err)
+// TestPathAllowed uses real directories, since the boundary is drawn on real
+// paths: a symbolic link must not cross it from either side.
+func TestPathAllowed(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"jails/www", "jails-evil/www", "elsewhere"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(target, name string) string {
+		t.Helper()
+		path := filepath.Join(base, name)
+		if err := os.Symlink(filepath.Join(base, target), path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	escape := link("elsewhere", "jails/escape")
+	alias := link("jails", "alias")
+
+	jails := filepath.Join(base, "jails")
+	tests := []struct {
+		name    string
+		path    string
+		allowed []string
+		trusted bool
+		wantErr string
+	}{
+		{name: "inside", path: filepath.Join(jails, "www"), allowed: []string{jails}},
+		{name: "the directory itself", path: jails, allowed: []string{jails}},
+		{name: "outside", path: filepath.Join(base, "elsewhere"), allowed: []string{jails}, wantErr: "is not under"},
+		{
+			name: "a sibling that shares the prefix",
+			path: filepath.Join(base, "jails-evil/www"), allowed: []string{jails}, wantErr: "is not under",
+		},
+		{
+			name: "a link inside that leads outside",
+			path: escape, allowed: []string{jails}, wantErr: "is not under",
+		},
+		{
+			name: "an allowed directory named through a link",
+			path: filepath.Join(jails, "www"), allowed: []string{alias},
+		},
+		{
+			name: "a path named through a link to an allowed directory",
+			path: filepath.Join(alias, "www"), allowed: []string{jails},
+		},
+		{name: "no list", path: filepath.Join(jails, "www"), wantErr: "sets no allowed_paths"},
+		{name: "no list, job authors trusted", path: filepath.Join(base, "elsewhere"), trusted: true},
+		{
+			name: "a list still binds a trusted job",
+			path: filepath.Join(base, "elsewhere"), allowed: []string{jails}, trusted: true,
+			wantErr: "is not under",
+		},
+		{
+			name: "a path that does not exist",
+			path: filepath.Join(jails, "nope"), allowed: []string{jails}, wantErr: "no such file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{AllowPrivileged: tc.trusted}
+			checkErr(t, cfg.pathAllowed("allowed_paths", tc.path, tc.allowed), tc.wantErr)
+		})
+	}
+}
+
+func TestValidDatasetName(t *testing.T) {
+	ok := []string{"zroot", "zroot/jails", "zroot/jails/base-14.3", "tank/a_b:c.d"}
+	bad := []string{
+		"", "/zroot", "zroot/", "zroot//jails", "-o", "-omountpoint=/etc", "zroot/jails@snap",
+		"zroot/ja ils", "9pool", "zroot/jails;reboot", "zroot/$(reboot)",
+	}
+	for _, s := range ok {
+		if !validDatasetName(s) {
+			t.Errorf("validDatasetName(%q) = false, want true", s)
+		}
+	}
+	for _, s := range bad {
+		if validDatasetName(s) {
+			t.Errorf("validDatasetName(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestSnapshotDataset(t *testing.T) {
+	tests := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"zroot/jails/base@ready", "zroot/jails/base", true},
+		{"zroot@a", "zroot", true},
+		{"zroot/jails/base", "", false},
+		{"zroot/jails/base@", "", false},
+		{"@ready", "", false},
+		{"zroot/jails/base@a@b", "", false},
+		{"zroot/jails/base@a/b", "", false},
+		{"-omountpoint=/etc@x", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := snapshotDataset(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("snapshotDataset(%q) = %q, %v; want %q, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 

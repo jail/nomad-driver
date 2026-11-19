@@ -30,36 +30,47 @@ func TestResolveRootfsDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The cases that are not about confinement run as a trusting operator
+	// would have it.
+	trusted := &Config{AllowPrivileged: true}
+
 	t.Run("a directory resolves to itself", func(t *testing.T) {
-		got, err := resolveRootfsDir(image, &Config{})
+		got, err := resolveRootfsDir(image, trusted)
 		if err != nil || got != image {
 			t.Errorf("resolveRootfsDir = %q, %v; want %q", got, err, image)
 		}
 	})
 
 	t.Run("a symlink resolves to its target", func(t *testing.T) {
-		got, err := resolveRootfsDir(link, &Config{})
+		got, err := resolveRootfsDir(link, trusted)
 		if err != nil || got != image {
 			t.Errorf("resolveRootfsDir = %q, %v; want %q", got, err, image)
 		}
 	})
 
 	t.Run("a file is not a jail root", func(t *testing.T) {
-		if _, err := resolveRootfsDir(file, &Config{}); err == nil {
+		if _, err := resolveRootfsDir(file, trusted); err == nil {
 			t.Error("a regular file was accepted as a jail root")
 		}
 	})
 
 	t.Run("a path that does not exist", func(t *testing.T) {
-		if _, err := resolveRootfsDir(filepath.Join(baseResolved, "nope"), &Config{}); err == nil {
+		if _, err := resolveRootfsDir(filepath.Join(baseResolved, "nope"), trusted); err == nil {
 			t.Error("a missing directory was accepted as a jail root")
 		}
 	})
 
 	t.Run("the host root is refused", func(t *testing.T) {
-		_, err := resolveRootfsDir("/", &Config{})
+		_, err := resolveRootfsDir("/", trusted)
 		if err == nil || !strings.Contains(err.Error(), "host's root") {
 			t.Errorf("err = %v, want it to refuse the host root", err)
+		}
+	})
+
+	t.Run("nothing is allowed until the operator says what is", func(t *testing.T) {
+		_, err := resolveRootfsDir(image, &Config{})
+		if err == nil || !strings.Contains(err.Error(), "sets no allowed_paths") {
+			t.Errorf("err = %v, want a jail root refused for want of allowed_paths", err)
 		}
 	})
 

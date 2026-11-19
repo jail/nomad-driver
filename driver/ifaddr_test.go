@@ -99,7 +99,7 @@ func TestIfconfigAliasArgs(t *testing.T) {
 
 func TestValidInterfaceName(t *testing.T) {
 	ok := []string{"em0", "bridge0", "epair0a", "vlan.100", "lagg0", "my_if-1"}
-	bad := []string{"", "thisnameiswaytoolong", "em0;reboot", "em 0", "em0|x", "../../etc"}
+	bad := []string{"", "thisnameiswaytoolong", "em0;reboot", "em 0", "em0|x", "../../etc", "-a", "-vnet"}
 	for _, n := range ok {
 		if !validInterfaceName(n) {
 			t.Errorf("validInterfaceName(%q) = false, want true", n)
