@@ -10,6 +10,11 @@ type jailState struct {
 	// Name is the jail's name, derived from the allocation and task.
 	Name string
 
+	// AllocDir is the allocation's shared directory.  Nomad removes it
+	// with the allocation, which is how a jail nobody is coming back for
+	// is known.
+	AllocDir string
+
 	// JID is the jail ID the kernel assigned, kept to be reported.  The
 	// kernel reuses IDs, so the jail is always found by Name.
 	JID int

@@ -331,6 +331,18 @@ func unmountPatiently(path string) (forced bool, err error) {
 	return true, jail.UnmountAll(path, jail.MountForce)
 }
 
+// stillMounted returns those of a jail's mounts that unmountAll left, for the
+// next attempt.  One it cannot tell about is kept.
+func stillMounted(targets []string) []string {
+	var left []string
+	for _, target := range targets {
+		if below, err := jail.MountsUnder(target); err != nil || len(below) > 0 {
+			left = append(left, target)
+		}
+	}
+	return left
+}
+
 // ownsRootMount reports whether the driver mounted the jail root itself, rather
 // than being pointed at it by the job.
 func ownsRootMount(st *jailState) bool {

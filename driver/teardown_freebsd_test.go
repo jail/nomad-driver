@@ -24,10 +24,11 @@ func newTestDriver(t *testing.T) *Driver {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	return &Driver{
-		config: &Config{Enabled: true, DefaultNetworkMode: NetworkInherit},
-		tasks:  newTaskStore(),
-		ctx:    ctx,
-		logger: hclog.NewNullLogger(),
+		config:  &Config{Enabled: true, DefaultNetworkMode: NetworkInherit},
+		tasks:   newTaskStore(),
+		records: newRecordStore(t.TempDir()),
+		ctx:     ctx,
+		logger:  hclog.NewNullLogger(),
 	}
 }
 

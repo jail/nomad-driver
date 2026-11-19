@@ -6,6 +6,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -37,22 +38,22 @@ func configureAliases(ctx context.Context, logger hclog.Logger, tc *TaskConfig) 
 }
 
 // removeAliases removes the aliases configureAliases added, and keeps going
-// past a failure.
-func removeAliases(ctx context.Context, logger hclog.Logger, aliases []string) error {
-	var firstErr error
+// past a failure.  It returns those it could not remove.
+func removeAliases(ctx context.Context, logger hclog.Logger, aliases []string) ([]string, error) {
+	var left []string
+	var errs []error
 	for _, raw := range aliases {
 		spec, err := parseIfaddr(raw)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			errs = append(errs, err)
 			continue
 		}
-		if _, err := run(ctx, logger, pathIfconfig, spec.ifconfigAliasArgs(true)...); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("removing alias %s: %w", spec, err)
+		if _, err := run(ctx, logger, pathIfconfig, spec.ifconfigAliasArgs(true)...); err != nil {
+			errs = append(errs, fmt.Errorf("removing alias %s: %w", spec, err))
+			left = append(left, raw)
 		}
 	}
-	return firstErr
+	return left, errors.Join(errs...)
 }
 
 // createVnet gives a jail a network stack of its own.

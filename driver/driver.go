@@ -88,6 +88,10 @@ type Driver struct {
 
 	tasks *taskStore
 
+	// records are the jails' states on disk, for a jail found without its
+	// task handle.
+	records *recordStore
+
 	// ctx is cancelled when the driver shuts down.
 	ctx context.Context
 
@@ -105,6 +109,7 @@ func NewPlugin(logger hclog.Logger) drivers.DriverPlugin {
 		eventer:        eventer.NewEventer(ctx, logger),
 		config:         &Config{},
 		tasks:          newTaskStore(),
+		records:        newRecordStore(recordDir),
 		ctx:            ctx,
 		signalShutdown: cancel,
 		logger:         logger,
@@ -245,7 +250,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	logger := d.logger.With("task_name", cfg.Name, "alloc_id", cfg.AllocID)
 	logger.Info("starting task", "network_mode", mode, "command", taskConfig.Command)
 
-	st := &jailState{Name: jailName(cfg)}
+	st := &jailState{Name: jailName(cfg), AllocDir: cfg.TaskDir().SharedAllocDir}
+
+	// The name is derived from the allocation and task, so a jail that has
+	// it is this task's, from an earlier run.
+	if err := d.reclaimFor(logger, cfg, st.Name); err != nil {
+		return nil, nil, err
+	}
 
 	// Roll back unless the end is reached.
 	started := false
@@ -257,13 +268,22 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		}
 	}()
 
-	// The name is derived from the allocation and task, so a jail that has
-	// it is this task's, from an earlier run.
-	if err := d.reclaimFor(logger, cfg, st.Name); err != nil {
+	// Kept up as the start goes, so that a driver that finds the jail
+	// without its task handle knows what was made for it.
+	record := func() error {
+		if err := d.records.save(st); err != nil {
+			return fmt.Errorf("recording what was made for jail %s: %w", st.Name, err)
+		}
+		return nil
+	}
+	if err := record(); err != nil {
 		return nil, nil, err
 	}
 
 	if err := prepareRootfs(d.ctx, logger, cfg, &taskConfig, d.config, st); err != nil {
+		return nil, nil, err
+	}
+	if err := record(); err != nil {
 		return nil, nil, err
 	}
 	if err := checkRootNotInUse(st.Root); err != nil {
@@ -279,6 +299,9 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	mounts, err := mountAll(st.Root, taskMounts(cfg, &taskConfig, d.config, mode), logger)
 	st.Mounts = append(st.Mounts, mounts...)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := record(); err != nil {
 		return nil, nil, err
 	}
 
@@ -306,7 +329,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	st.JID = jid
 	logger.Debug("created jail", "jail", st.Name, "jid", jid, "root", st.Root)
 
-	if err := d.configureNetwork(logger, &taskConfig, st, mode); err != nil {
+	// The aliases and the epair are recorded even if only some of them
+	// were made.
+	err = d.configureNetwork(logger, &taskConfig, st, mode)
+	if rerr := record(); err == nil {
+		err = rerr
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -618,20 +647,33 @@ func (d *Driver) teardown(logger hclog.Logger, st *jailState) error {
 		st.Epair, st.Bridge = "", ""
 	}
 
-	if err := removeAliases(d.ctx, logger, st.Aliases); err != nil {
+	left, err := removeAliases(d.ctx, logger, st.Aliases)
+	if err != nil {
 		errs = append(errs, err)
 	}
-	st.Aliases = nil
+	st.Aliases = left
 
 	if err := unmountAll(st); err != nil {
 		errs = append(errs, err)
+		st.Mounts = stillMounted(st.Mounts)
+	} else {
+		st.Mounts = nil
 	}
-	st.Mounts = nil
 
 	if err := destroyDataset(d.ctx, logger, st.Dataset); err != nil {
 		errs = append(errs, err)
 	} else {
 		st.Dataset = ""
+	}
+
+	// The record goes with the last of what it describes.  Until then it
+	// says what is left, for the next attempt.
+	if st.Name != "" {
+		if len(errs) == 0 {
+			d.records.remove(st.Name)
+		} else if err := d.records.save(st); err != nil {
+			logger.Warn("could not record what is left of the jail", "jail", st.Name, "error", err)
+		}
 	}
 
 	return errors.Join(errs...)
@@ -662,39 +704,24 @@ func removeJail(name string) error {
 	return nil
 }
 
-// reclaim removes a jail left behind by an earlier run of the same task, with
-// its mounts.
-func (d *Driver) reclaim(logger hclog.Logger, name string) error {
-	info, err := jail.Inspect(name)
-	switch {
-	case errors.Is(err, jail.ErrNotFound):
-		return nil
-	case err != nil:
-		return fmt.Errorf("looking for an existing jail named %s: %w", name, err)
-	}
-
-	logger.Warn("reclaiming a jail left behind by an earlier run", "jail", name, "jid", info.JID)
-	return d.teardown(logger, d.reclaimState(info))
-}
-
-// reclaimFor is reclaim, with a task event to say so.
+// reclaimFor removes what an earlier run of the same task left behind, and
+// says so in a task event.
 func (d *Driver) reclaimFor(logger hclog.Logger, cfg *drivers.TaskConfig, name string) error {
-	exists, _, err := jail.Exists(name)
-	if err != nil {
-		return fmt.Errorf("looking for an existing jail named %s: %w", name, err)
+	st, err := d.leftover(logger, name)
+	if err != nil || st == nil {
+		return err
 	}
-	if !exists {
-		return nil
-	}
+	logger.Warn("reclaiming a jail left behind by an earlier run", "jail", name)
 	d.emitEvent(cfg, "Reclaiming the jail %s, left behind by an earlier run of this task", name)
-	return d.reclaim(logger, name)
+	return d.teardown(logger, st)
 }
 
 // reclaimState rebuilds enough of a jail's state to tear it down, for a jail
-// found on the system rather than in a task handle.
+// found on the system with neither a task handle nor a record.
 //
-// Its mounts follow from its root and its epair from its name.  The aliases of
-// an alias-mode task cannot be rebuilt, and are left.
+// Its mounts follow from its root and its epair from its name.  What a job
+// had mounted under a root it named, and the aliases of an alias-mode task,
+// cannot be rebuilt, and are left.
 func (d *Driver) reclaimState(info jail.Info) *jailState {
 	st := &jailState{
 		Name:  info.Name,
@@ -712,13 +739,20 @@ func (d *Driver) reclaimState(info jail.Info) *jailState {
 		st.Mounts = driverMountPoints(info.Path)
 	}
 
-	if d.config.ZFSParent != "" {
-		dataset := d.config.ZFSParent + "/" + info.Name
-		if exists, err := datasetExists(d.ctx, d.logger, dataset); err == nil && exists {
-			st.Dataset = dataset
-		}
-	}
+	st.Dataset = d.cloneOf(info.Name)
 	return st
+}
+
+// cloneOf returns the ZFS clone made for the named jail, if there is one.
+func (d *Driver) cloneOf(name string) string {
+	if d.config.ZFSParent == "" {
+		return ""
+	}
+	dataset := d.config.ZFSParent + "/" + name
+	if exists, err := datasetExists(d.ctx, d.logger, dataset); err != nil || !exists {
+		return ""
+	}
+	return dataset
 }
 
 // reapOrphans removes the driver's jails that no task is coming back for.
@@ -733,22 +767,25 @@ func (d *Driver) reapOrphans() {
 		return
 	}
 
+	alive := make(map[string]bool)
 	for _, info := range jails {
 		// A dying jail has been removed already, and its root may be
 		// its successor's by now.
 		if !isDriverJail(info.Name) || info.Path == "" || info.Dying {
 			continue
 		}
+		alive[info.Name] = true
 		reason, orphan := orphanReason(info.Path)
 		if !orphan {
 			continue
 		}
 		d.logger.Warn("reaping an orphaned jail", "jail", info.Name, "jid", info.JID,
 			"root", info.Path, "reason", reason)
-		if err := d.teardown(d.logger, d.reclaimState(info)); err != nil {
+		if err := d.teardown(d.logger, d.stateOf(info)); err != nil {
 			d.logger.Error("could not reap jail", "jail", info.Name, "error", err)
 		}
 	}
+	d.reapRemains(alive)
 }
 
 // orphanReason reports whether the jail rooted at root belongs to an allocation

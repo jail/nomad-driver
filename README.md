@@ -292,10 +292,11 @@ task.
 
 ## Lifecycle and failure
 
-What the driver creates for a task is recorded in the task handle as it goes.  A
-start that fails part way undoes what it had done.  A restarted driver reads the
-state back, finds the jail by name, and supervises and tears down a task it did
-not start; `nomad alloc exec`, signals, statistics and logs go on working.
+What the driver creates for a task is recorded as it goes, in the task handle
+and in a file under `/var/run/jail-nomad-driver`.  A start that fails part way
+undoes what it had done.  A restarted driver reads the state back, finds the
+jail by name, and supervises and tears down a task it did not start;
+`nomad alloc exec`, signals, statistics and logs go on working.
 
 Stopping a task signals its main process and waits out `kill_timeout`.  Whatever
 else is still running in the jail after that is killed with the jail,
@@ -311,11 +312,15 @@ task is recognised and reclaimed when the task starts again.
 has gone: the agent was killed, and its allocations were collected while it was
 down.
 
-Not reclaimed after a crash, since nothing but the task handle records them:
-aliases added for an `alias` task; what a job's `mount` and `volume_mount` put
-under a root it named, where the jail is reaped without its state; and, where
-Nomad forgets the allocation as well, which in practice means `-dev`, the jail
-itself.
+The reaper goes by the file, since Nomad no longer has the task handle: what
+was mounted, aliased and cloned for the jail goes with it, and so does what a
+start or a teardown that was cut short left with no jail at all.  A file is
+believed only in the boot it was written in, and never against a root that
+another jail has since been given.
+
+Not reclaimed: the jail itself, where Nomad forgets the allocation and its
+directory survives, which in practice means `-dev`; and a ZFS clone, after a
+reboot in which the client's state was lost as well.
 
 ## Licensing
 
