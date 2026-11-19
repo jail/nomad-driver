@@ -42,6 +42,21 @@ func TestRCTLRules(t *testing.T) {
 			want: []string{"jail:nomad-abc12345-web:memoryuse:deny=512M"},
 		},
 		{
+			name: "a hard limit kills at the reservation",
+			res:  resources(256, 0),
+			tc:   func(tc *TaskConfig) { tc.MemoryHardLimit = true },
+			want: []string{"jail:nomad-abc12345-web:memoryuse:sigkill=256M"},
+		},
+		{
+			name: "a hard limit kills at the ceiling, and the reservation is the soft limit",
+			res:  resources(256, 512),
+			tc:   func(tc *TaskConfig) { tc.MemoryHardLimit = true },
+			want: []string{
+				"jail:nomad-abc12345-web:memoryuse:sigkill=512M",
+				"jail:nomad-abc12345-web:memoryuse:deny=256M",
+			},
+		},
+		{
 			name: "no memory, no rule",
 			res:  resources(0, 0),
 			want: nil,

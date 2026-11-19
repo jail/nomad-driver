@@ -370,6 +370,24 @@ func TestTaskConfigValidate(t *testing.T) {
 			wantErr: `write "mount"`,
 		},
 		{
+			name:   "memory_hard_limit needs no privilege",
+			mutate: func(tc *TaskConfig) { tc.MemoryHardLimit = true },
+		},
+		{
+			name: "memory_hard_limit without the task's limits",
+			mutate: func(tc *TaskConfig) {
+				tc.MemoryHardLimit = true
+				tc.ResourceLimits = false
+			},
+			wantErr: "memory_hard_limit needs",
+		},
+		{
+			name:    "memory_hard_limit on a node that applies no rules",
+			mutate:  func(tc *TaskConfig) { tc.MemoryHardLimit = true },
+			driver:  func(c *Config) { c.ResourceLimits = false },
+			wantErr: "memory_hard_limit needs",
+		},
+		{
 			name:   "extra_rctl on a node that applies no rules",
 			mutate: func(tc *TaskConfig) { tc.ExtraRCTL = []string{"maxproc:deny=50"} },
 			driver: func(c *Config) {

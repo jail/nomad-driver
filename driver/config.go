@@ -171,6 +171,10 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewAttr("resource_limits", "bool", false),
 		hclspec.NewLiteral("true"),
 	),
+	"memory_hard_limit": hclspec.NewDefault(
+		hclspec.NewAttr("memory_hard_limit", "bool", false),
+		hclspec.NewLiteral("false"),
+	),
 	"extra_rctl": hclspec.NewAttr("extra_rctl", "list(string)", false),
 	"cpuset": hclspec.NewDefault(
 		hclspec.NewAttr("cpuset", "bool", false),
@@ -228,9 +232,10 @@ type TaskConfig struct {
 	ChildrenMax   int     `codec:"children_max"`
 	JailParams    mapList `codec:"jail_params"`
 
-	ResourceLimits bool     `codec:"resource_limits"`
-	ExtraRCTL      []string `codec:"extra_rctl"`
-	Cpuset         bool     `codec:"cpuset"`
+	ResourceLimits  bool     `codec:"resource_limits"`
+	MemoryHardLimit bool     `codec:"memory_hard_limit"`
+	ExtraRCTL       []string `codec:"extra_rctl"`
+	Cpuset          bool     `codec:"cpuset"`
 }
 
 // VnetConfig describes a vnet task's epair(4) leg.  With no Address the
@@ -476,6 +481,12 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 		return fmt.Errorf("children_max: %d is negative", tc.ChildrenMax)
 	}
 
+	// A job may ask for this of its own task without being trusted with
+	// anything: it is the task's own limit, kept.
+	if tc.MemoryHardLimit && !(tc.ResourceLimits && cfg.ResourceLimits) {
+		return fmt.Errorf("memory_hard_limit needs the task's memory limit, which " +
+			"resource_limits = false turns off, in the task or in the driver's plugin configuration")
+	}
 	if len(tc.ExtraRCTL) > 0 && !cfg.ResourceLimits {
 		return fmt.Errorf("extra_rctl needs rctl(8) rules, which resource_limits = false " +
 			"in the driver's plugin configuration turns off")

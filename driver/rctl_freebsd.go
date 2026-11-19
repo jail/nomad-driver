@@ -22,8 +22,13 @@ import (
 // as a special case, and vm_daemon enforces it by unmapping pages the jail has
 // not referenced since the page daemon last looked.  Nothing is refused and
 // nothing is killed: with memory to spare an idle task is over its limit for
-// minutes, and a busy one for good.  A job that needs more adds a sigkill,
-// swapuse or vmemoryuse rule.
+// minutes, and a busy one for good.
+//
+// With memory_hard_limit the limit is a memoryuse:sigkill rule instead, which
+// vm_daemon acts on within a second of the jail going over.  That is what
+// Nomad's limit does elsewhere, but resident set size counts a page once for
+// each process that maps it, so it is for the job to ask for.  The reservation
+// is then the soft limit, where the job set a ceiling above it.
 //
 // CPU is not translated: Nomad counts MHz and pcpu is a percentage of a core,
 // so a conversion would be a guess at the node's clock.  Reserved cores get a
@@ -39,8 +44,15 @@ func rctlRules(st *jailState, tc *TaskConfig, res *drivers.Resources) []string {
 		if mem.MemoryMaxMB > limit {
 			limit = mem.MemoryMaxMB
 		}
-		if limit > 0 {
+		switch {
+		case limit <= 0:
+		case !tc.MemoryHardLimit:
 			rules = append(rules, fmt.Sprintf("jail:%s:memoryuse:deny=%dM", st.Name, limit))
+		default:
+			rules = append(rules, fmt.Sprintf("jail:%s:memoryuse:sigkill=%dM", st.Name, limit))
+			if mem.MemoryMB > 0 && mem.MemoryMB < limit {
+				rules = append(rules, fmt.Sprintf("jail:%s:memoryuse:deny=%dM", st.Name, mem.MemoryMB))
+			}
 		}
 	}
 

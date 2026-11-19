@@ -217,11 +217,12 @@ Nomad's `dns` block is written to `/etc/resolv.conf` in the jail.
 
 ### Resources
 
-| Field             | Default | Meaning                                                                                     |
-| ----------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `resource_limits` | `true`  | Turn the task's Nomad resources into `rctl(8)` rules.                                       |
-| `extra_rctl`      | none    | Extra rules, in full or from the resource on (`"pcpu:deny=50"`).  Needs `allow_privileged`. |
-| `cpuset`          | `true`  | Pin the jail to the cores Nomad reserved, with `cpuset(1)`.                                 |
+| Field               | Default | Meaning                                                                                     |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `resource_limits`   | `true`  | Turn the task's Nomad resources into `rctl(8)` rules.                                       |
+| `memory_hard_limit` | `false` | Kill the task at its memory limit, with `memoryuse:sigkill`.                                |
+| `extra_rctl`        | none    | Extra rules, in full or from the resource on (`"pcpu:deny=50"`).  Needs `allow_privileged`. |
+| `cpuset`            | `true`  | Pin the jail to the cores Nomad reserved, with `cpuset(1)`.                                 |
 
 Memory becomes `memoryuse:deny`, of `memory_max` where the job set one.
 
@@ -231,11 +232,15 @@ memory and kills nothing.  On a host with memory to spare, an idle task holding
 four times its limit took ten minutes to be brought down to it, and one that
 kept touching its memory never was.
 
-A job that needs more adds a rule through `extra_rctl`.  `memoryuse:sigkill=`
-kills the task at the limit, counting a page once for each process that maps
-it.  `swapuse:deny=` caps what the jail may commit, which is more than it uses.
-`vmemoryuse:deny=` caps address space, of which a Go program reserves several
-times what it uses.
+`memory_hard_limit = true` makes it a hard one: `memoryuse:sigkill`, which
+kills the task within a second of the jail going over.  The limit is then
+`memory_max` where the job set one, with `memory` the soft limit below it.
+Resident set size counts a page once for each process that maps it, so a task
+whose processes share memory is over sooner than it looks.
+
+A job can add other rules through `extra_rctl`.  `swapuse:deny=` caps what the
+jail may commit, which is more than it uses.  `vmemoryuse:deny=` caps address
+space, of which a Go program reserves several times what it uses.
 
 `resource_limits = false` in the task does without the derived rules and keeps
 the job's own.  In the plugin it turns `rctl(8)` off, and a task that asks for a
@@ -247,7 +252,7 @@ a conversion would be a guess at the node's clock.  A job can state a ceiling in
 
 With resource accounting off, a limit the driver derived is skipped with a
 warning, and a job that needs it can constrain on `driver.jail.rctl`.  A rule
-the job asked for by name fails the task.
+the job asked for, a hard memory limit included, fails the task.
 
 ## Node attributes
 
