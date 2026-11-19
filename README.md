@@ -138,6 +138,8 @@ driver mounted is, so a thin jail's own mounts stay.
   makes an `epair(4)`, adds the host leg to a bridge, moves the other into the
   jail, and addresses and routes it there.  The address is reported to Nomad, so
   a service registered from the task is advertised at the jail's address.
+  The jail's side is configured with `ifconfig -j` and `route -j`, which FreeBSD
+  has from 13.5 and 14.0, so the image needs no network utilities.
 - `none` leaves the jail without IP (`ip4=disable`, `ip6=disable`): the task
   cannot open an IP socket at all, loopback included.
 

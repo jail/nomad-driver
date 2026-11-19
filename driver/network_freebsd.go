@@ -58,10 +58,10 @@ func removeAliases(ctx context.Context, logger hclog.Logger, aliases []string) e
 // createVnet gives a jail a network stack of its own.
 //
 // It makes an epair(4), bridges the "a" leg on the host, moves the "b" leg into
-// the jail and configures it there with jexec(8).  The host leg is renamed to
-// epairHostName(st.Name) as soon as it exists, so that it can be found from the
-// jail's name.  If this fails the caller has to call destroyEpair, since the
-// host leg may exist by then.
+// the jail and configures it there; see configureVnetInterface.  The host leg
+// is renamed to epairHostName(st.Name) as soon as it exists, so that it can be
+// found from the jail's name.  If this fails the caller has to call
+// destroyEpair, since the host leg may exist by then.
 func createVnet(ctx context.Context, logger hclog.Logger, bridge string, v *VnetConfig, st *jailState) error {
 	hostSide := epairHostName(st.Name)
 
@@ -137,20 +137,22 @@ func createVnet(ctx context.Context, logger hclog.Logger, bridge string, v *Vnet
 	return configureVnetInterface(ctx, logger, st.Name, jailSide, v, st)
 }
 
-// configureVnetInterface addresses the jail's leg and sets its default routes,
-// with ifconfig(8) and route(8) run through jexec(8).  With no address the
-// interface is brought up and left for the task to configure.
+// configureVnetInterface addresses the jail's leg and sets its default routes.
+//
+// It uses the host's ifconfig(8) and route(8) with -j.  Going through jexec(8)
+// would run the image's own /sbin/ifconfig as root, and need the image to have
+// one.  With no address the interface is brought up and left for the task to
+// configure.
 func configureVnetInterface(ctx context.Context, logger hclog.Logger, jailName string, iface string, v *VnetConfig, st *jailState) error {
-	jexec := func(args ...string) error {
-		_, err := run(ctx, logger, pathJexec, append([]string{jailName}, args...)...)
+	inJail := func(tool string, args ...string) error {
+		_, err := run(ctx, logger, tool, append([]string{"-j", jailName}, args...)...)
 		return err
 	}
 
-	// A new vnet starts with lo0 down.
-	if err := jexec(pathIfconfig, "lo0", "up"); err != nil {
-		return fmt.Errorf("bringing up lo0 in the jail: %w", err)
+	if err := configureLoopback(ctx, logger, jailName); err != nil {
+		return err
 	}
-	if err := jexec(pathIfconfig, iface, "up"); err != nil {
+	if err := inJail(pathIfconfig, iface, "up"); err != nil {
 		return fmt.Errorf("bringing up %s in the jail: %w", iface, err)
 	}
 	if v == nil {
@@ -158,7 +160,7 @@ func configureVnetInterface(ctx context.Context, logger hclog.Logger, jailName s
 	}
 
 	if v.Address != "" {
-		if err := jexec(pathIfconfig, iface, "inet", v.Address); err != nil {
+		if err := inJail(pathIfconfig, iface, "inet", v.Address); err != nil {
 			return fmt.Errorf("setting %s on %s: %w", v.Address, iface, err)
 		}
 		ip, _, err := net.ParseCIDR(v.Address)
@@ -168,13 +170,13 @@ func configureVnetInterface(ctx context.Context, logger hclog.Logger, jailName s
 		st.IP = ip.String()
 	}
 	if v.Gateway != "" {
-		if err := jexec(pathRoute, "-4", "add", "default", v.Gateway); err != nil {
+		if err := inJail(pathRoute, "-4", "add", "default", v.Gateway); err != nil {
 			return fmt.Errorf("adding default route via %s: %w", v.Gateway, err)
 		}
 	}
 
 	if v.Address6 != "" {
-		if err := jexec(pathIfconfig, iface, "inet6", v.Address6); err != nil {
+		if err := inJail(pathIfconfig, iface, "inet6", v.Address6); err != nil {
 			return fmt.Errorf("setting %s on %s: %w", v.Address6, iface, err)
 		}
 		if st.IP == "" {
@@ -186,11 +188,27 @@ func configureVnetInterface(ctx context.Context, logger hclog.Logger, jailName s
 		}
 	}
 	if v.Gateway6 != "" {
-		if err := jexec(pathRoute, "-6", "add", "default", v.Gateway6); err != nil {
+		if err := inJail(pathRoute, "-6", "add", "default", v.Gateway6); err != nil {
 			return fmt.Errorf("adding default IPv6 route via %s: %w", v.Gateway6, err)
 		}
 	}
 
+	return nil
+}
+
+// configureLoopback sets up lo0 in a jail with a stack of its own.  A new vnet
+// has it down and unaddressed; bringing it up gives it ::1 but not 127.0.0.1,
+// which on a host is rc.d/netif's doing.
+func configureLoopback(ctx context.Context, logger hclog.Logger, jailName string) error {
+	for _, args := range [][]string{
+		{"lo0", "up"},
+		{"lo0", "inet", "127.0.0.1/8"},
+	} {
+		args = append([]string{"-j", jailName}, args...)
+		if _, err := run(ctx, logger, pathIfconfig, args...); err != nil {
+			return fmt.Errorf("configuring lo0 in the jail: %w", err)
+		}
+	}
 	return nil
 }
 
