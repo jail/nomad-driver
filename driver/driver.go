@@ -63,7 +63,7 @@ var (
 			drivers.NetIsolationModeHost,
 			// vnet=new.
 			drivers.NetIsolationModeTask,
-			// ip4=disable.
+			// vnet=new, with only lo0.
 			drivers.NetIsolationModeNone,
 		},
 
@@ -428,6 +428,10 @@ func (d *Driver) configureNetwork(logger hclog.Logger, tc *TaskConfig, st *jailS
 		return err
 	case NetworkVnet:
 		return createVnet(d.ctx, logger, bridgeFor(d.config, tc.Vnet), tc.Vnet, st)
+	case NetworkNone:
+		if noneUsesVnet() {
+			return configureLoopback(d.ctx, logger, st.Name)
+		}
 	}
 	return nil
 }

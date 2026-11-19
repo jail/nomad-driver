@@ -104,9 +104,10 @@ func TestJailNetworkParams(t *testing.T) {
 			want: map[string]string{"ip4": "inherit", "ip6": "inherit"},
 		},
 		{
-			name: "none leaves only loopback",
-			mode: NetworkNone,
-			want: map[string]string{"ip4": "disable", "ip6": "disable"},
+			name:   "none is a stack of its own, for the loopback in it",
+			mode:   NetworkNone,
+			want:   map[string]string{"vnet": "new"},
+			absent: []string{"ip4", "ip6"},
 		},
 		{
 			name:   "vnet asks the kernel for a stack of its own",
@@ -151,7 +152,7 @@ func TestJailNetworkParams(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.mode == NetworkVnet && !jail.HasParam("vnet") {
+			if (tc.mode == NetworkVnet || tc.mode == NetworkNone) && !jail.HasParam("vnet") {
 				t.Skip("kernel has no VIMAGE support")
 			}
 			task := defaultTaskConfig()

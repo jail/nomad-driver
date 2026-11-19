@@ -27,8 +27,9 @@ const (
 	// epair(4) leg bridged to the host.
 	NetworkVnet = "vnet"
 
-	// NetworkNone disables IPv4 and IPv6 in the jail (ip4=disable,
-	// ip6=disable).
+	// NetworkNone gives the jail a stack of its own with only loopback in
+	// it.  Without VIMAGE it is ip4=disable and ip6=disable instead, which
+	// leaves no loopback either.
 	NetworkNone = "none"
 )
 

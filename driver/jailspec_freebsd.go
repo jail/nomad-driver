@@ -75,6 +75,13 @@ func jailNetworkParams(tc *TaskConfig, st *jailState, mode string) ([]jail.Param
 		}, nil
 
 	case NetworkNone:
+		// A stack of its own holding only lo0, which configureNetwork
+		// brings up.  Disabling the address families, where there is no
+		// VIMAGE, is harsher: socket(2) then fails outright, loopback
+		// included.
+		if noneUsesVnet() {
+			return []jail.Param{{Name: "vnet", Value: "new"}}, nil
+		}
 		return []jail.Param{
 			{Name: "ip4", Value: "disable"},
 			{Name: "ip6", Value: "disable"},
@@ -115,6 +122,12 @@ func jailNetworkParams(tc *TaskConfig, st *jailState, mode string) ([]jail.Param
 	}
 
 	return nil, badNetworkMode(mode)
+}
+
+// noneUsesVnet reports whether a task with no network gets a stack of its own,
+// which it does wherever there is VIMAGE.
+func noneUsesVnet() bool {
+	return jail.HasParam("vnet")
 }
 
 func bareAddrs(specs []string) ([]string, error) {

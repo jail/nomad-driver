@@ -140,8 +140,10 @@ driver mounted is, so a thin jail's own mounts stay.
   a service registered from the task is advertised at the jail's address.
   The jail's side is configured with `ifconfig -j` and `route -j`, which FreeBSD
   has from 13.5 and 14.0, so the image needs no network utilities.
-- `none` leaves the jail without IP (`ip4=disable`, `ip6=disable`): the task
-  cannot open an IP socket at all, loopback included.
+- `none` gives the jail a network stack of its own with nothing in it but
+  loopback (`vnet=new`), which is what Nomad's `mode = "none"` means.  Without
+  `VIMAGE` it falls back to `ip4=disable`, `ip6=disable`, which is stricter: the
+  task cannot open an IP socket at all, loopback included.
 
 The `vnet` block takes `bridge`, `address`, `gateway`, `address6`, `gateway6`,
 `mac` and `mtu`.  Addresses are in prefix form (`10.88.0.5/24`).  With no

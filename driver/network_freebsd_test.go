@@ -6,6 +6,8 @@ package driver
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -75,5 +77,49 @@ func TestCreateVnetNeedsNothingFromTheImage(t *testing.T) {
 	}
 	if !interfaceGone(d.ctx, d.logger, epairHostName(name)) {
 		t.Errorf("%s outlived the task", epairHostName(name))
+	}
+}
+
+// TestNoneModeHasALoopbackAndNothingElse checks that a task with no network has
+// an lo0 that answers on 127.0.0.1 and ::1, and no other interface.
+func TestNoneModeHasALoopbackAndNothingElse(t *testing.T) {
+	requireRoot(t)
+	if !noneUsesVnet() {
+		t.Skip("kernel has no VIMAGE support")
+	}
+	d := newTestDriver(t)
+
+	tc := defaultTaskConfig()
+	st := &jailState{Name: fmt.Sprintf("nomad-none-%d", os.Getpid()), Root: t.TempDir()}
+	tc.MountDevfs = false
+
+	params, err := jailParams(tc, d.config, st, NetworkNone, "none.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jail.Set(jail.FlagCreate, params...); err != nil {
+		t.Fatalf("creating the jail: %v", err)
+	}
+	t.Cleanup(func() { _ = d.teardown(d.logger, st) })
+
+	if err := d.configureNetwork(d.logger, tc, st, NetworkNone); err != nil {
+		t.Fatalf("configureNetwork: %v", err)
+	}
+
+	list, err := run(d.ctx, d.logger, pathIfconfig, "-j", st.Name, "-l")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(list) != "lo0" {
+		t.Errorf("the jail's interfaces are %q, want only lo0", list)
+	}
+	lo0, err := run(d.ctx, d.logger, pathIfconfig, "-j", st.Name, "lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"inet 127.0.0.1", "inet6 ::1", "UP,"} {
+		if !strings.Contains(lo0, want) {
+			t.Errorf("lo0 lacks %q:\n%s", want, lo0)
+		}
 	}
 }
