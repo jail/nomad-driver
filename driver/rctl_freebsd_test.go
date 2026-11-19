@@ -6,6 +6,7 @@ package driver
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -87,5 +88,73 @@ func TestRCTLRulesDoNotMentionCPUShares(t *testing.T) {
 
 	if got := rctlRules(st, defaultTaskConfig(), res); len(got) != 0 {
 		t.Errorf("rctlRules = %v, want no rules for a CPU share", got)
+	}
+}
+
+// TestRCTLAgainstTheKernel installs a task's rules on a real jail and removes
+// them.  It needs kern.racct.enable, which is a loader tunable.
+func TestRCTLAgainstTheKernel(t *testing.T) {
+	requireRoot(t)
+	if !racctEnabled() {
+		t.Skip("kern.racct.enable is off")
+	}
+
+	d := newTestDriver(t)
+	name, _ := testJail(t, "rctl")
+	st := &jailState{Name: name}
+	installed := func() string {
+		t.Helper()
+		out, err := run(d.ctx, d.logger, pathRCTL, "jail:"+name)
+		if err != nil {
+			t.Fatalf("listing rules: %v", err)
+		}
+		return out
+	}
+
+	tc := defaultTaskConfig()
+	tc.ExtraRCTL = []string{"maxproc:deny=50"}
+	added, err := applyRCTL(d.ctx, d.logger, rctlRules(st, tc, resources(64, 0)), true)
+	if err != nil {
+		t.Fatalf("applyRCTL: %v", err)
+	}
+	if len(added) != 2 {
+		t.Errorf("applyRCTL added %q, want two rules", added)
+	}
+	got := installed()
+	for _, want := range []string{
+		"jail:" + name + ":memoryuse:deny=67108864",
+		"jail:" + name + ":maxproc:deny=50",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rule %s is not installed; the jail has:\n%s", want, got)
+		}
+	}
+
+	if err := removeRCTL(d.ctx, d.logger, st); err != nil {
+		t.Fatalf("removeRCTL: %v", err)
+	}
+	if got := installed(); got != "" {
+		t.Errorf("rules left after removeRCTL:\n%s", got)
+	}
+	// Teardown may run twice.
+	if err := removeRCTL(d.ctx, d.logger, st); err != nil {
+		t.Errorf("removeRCTL with nothing to remove: %v", err)
+	}
+
+	// A rule the kernel refuses fails the task.  What went in before it is
+	// reported, and goes with the jail's other rules.
+	tc.ExtraRCTL = []string{"nosuchresource:deny=1"}
+	added, err = applyRCTL(d.ctx, d.logger, rctlRules(st, tc, resources(64, 0)), true)
+	if err == nil {
+		t.Error("applyRCTL accepted a resource the kernel does not have")
+	}
+	if len(added) != 1 {
+		t.Errorf("applyRCTL reported %q as added, want the memory rule alone", added)
+	}
+	if err := removeRCTL(d.ctx, d.logger, st); err != nil {
+		t.Fatalf("removeRCTL: %v", err)
+	}
+	if got := installed(); got != "" {
+		t.Errorf("rules left after a failed applyRCTL was undone:\n%s", got)
 	}
 }
