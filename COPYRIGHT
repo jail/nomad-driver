@@ -4,11 +4,11 @@ SPDX-License-Identifier line of its header.
 BSD-2-Clause, in LICENSE.BSD
 	Copyright (c) 2024-2026 Faraz Vahedi <kfv@FreeBSD.org>
 
-	Everything written for this driver, which is all of it but the four
-	files below.  The licence is that of the FreeBSD source tree, so that
-	code can move between the two.
+	Everything written for this driver: all of every file but the four
+	below, and what was added to those.  The licence is that of the
+	FreeBSD source tree, so that code can move between the two.
 
-MPL-2.0, in LICENSE.MPL
+MPL-2.0 AND BSD-2-Clause, in LICENSE.MPL and LICENSE.BSD
 	Copyright (c) HashiCorp, Inc.
 	Copyright (c) 2024-2026 Faraz Vahedi <kfv@FreeBSD.org>
 
@@ -19,9 +19,9 @@ MPL-2.0, in LICENSE.MPL
 
 	These began as files of hashicorp/nomad-skeleton-driver-plugin.  The
 	MPL is a per-file licence, and a modified version of a covered file
-	stays covered, so they keep it and the upstream notice, with a second
-	notice for the changes.  The BSD-2-Clause files are not derived from
-	them.
+	stays covered, so they keep it and the upstream notice.  What was
+	added to them is BSD-2-Clause like the rest, and the files as they
+	stand can only be used under both.
 
 The driver links against github.com/hashicorp/nomad.  Nomad 1.7.0 and later is
 under the Business Source Licence 1.1, whose Additional Use Grant permits

@@ -1,7 +1,7 @@
 // Copyright (c) HashiCorp, Inc.
 // Copyright (c) 2024-2026 Faraz Vahedi <kfv@FreeBSD.org>
 //
-// SPDX-License-Identifier: BSD-2-Clause AND MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 AND BSD-2-Clause
 
 //go:build freebsd
 
