@@ -94,7 +94,7 @@ func taskMounts(cfg *drivers.TaskConfig, tc *TaskConfig, mode string) []mountSpe
 			Type:     m.Type,
 			Source:   m.Source,
 			Target:   m.Target,
-			Options:  m.Options,
+			Options:  m.Options.merged(),
 			Required: true,
 		}
 		if spec.Type == "" {

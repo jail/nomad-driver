@@ -52,13 +52,14 @@ func jailParams(tc *TaskConfig, st *jailState, mode string, hostname string) ([]
 	}
 
 	// Sorted, so that the call and any error from it are reproducible.
-	extra := make([]string, 0, len(tc.JailParams))
-	for name := range tc.JailParams {
+	passthrough := tc.JailParams.merged()
+	extra := make([]string, 0, len(passthrough))
+	for name := range passthrough {
 		extra = append(extra, name)
 	}
 	sort.Strings(extra)
 	for _, name := range extra {
-		params = append(params, jail.Param{Name: name, Value: tc.JailParams[name]})
+		params = append(params, jail.Param{Name: name, Value: passthrough[name]})
 	}
 
 	return params, nil

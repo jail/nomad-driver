@@ -84,7 +84,8 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	})), hclspec.NewLiteral(`{ jail = true }`)),
 })
 
-// taskConfigSpec is the schema of a task's config stanza.
+// taskConfigSpec is the schema of a task's config stanza.  No setting in it may
+// be a map(string); see mapList.
 var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"command":  hclspec.NewAttr("command", "string", true),
 	"args":     hclspec.NewAttr("args", "list(string)", false),
@@ -136,7 +137,7 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 			hclspec.NewAttr("readonly", "bool", false),
 			hclspec.NewLiteral("false"),
 		),
-		"options": hclspec.NewAttr("options", "map(string)", false),
+		"options": hclspec.NewAttr("options", "list(map(string))", false),
 	})),
 
 	"allow": hclspec.NewAttr("allow", "list(string)", false),
@@ -156,7 +157,7 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewAttr("children_max", "number", false),
 		hclspec.NewLiteral("0"),
 	),
-	"jail_params": hclspec.NewAttr("jail_params", "map(string)", false),
+	"jail_params": hclspec.NewAttr("jail_params", "list(map(string))", false),
 
 	"resource_limits": hclspec.NewDefault(
 		hclspec.NewAttr("resource_limits", "bool", false),
@@ -212,10 +213,10 @@ type TaskConfig struct {
 
 	Allow []string `codec:"allow"`
 	// Securelevel is -1 if the task did not ask for one.
-	Securelevel   int               `codec:"securelevel"`
-	EnforceStatfs int               `codec:"enforce_statfs"`
-	ChildrenMax   int               `codec:"children_max"`
-	JailParams    map[string]string `codec:"jail_params"`
+	Securelevel   int     `codec:"securelevel"`
+	EnforceStatfs int     `codec:"enforce_statfs"`
+	ChildrenMax   int     `codec:"children_max"`
+	JailParams    mapList `codec:"jail_params"`
 
 	ResourceLimits bool     `codec:"resource_limits"`
 	ExtraRCTL      []string `codec:"extra_rctl"`
@@ -236,11 +237,28 @@ type VnetConfig struct {
 
 // MountConfig is an extra filesystem to mount in the jail.
 type MountConfig struct {
-	Source   string            `codec:"source"`
-	Target   string            `codec:"target"`
-	Type     string            `codec:"type"`
-	Readonly bool              `codec:"readonly"`
-	Options  map[string]string `codec:"options"`
+	Source   string  `codec:"source"`
+	Target   string  `codec:"target"`
+	Type     string  `codec:"type"`
+	Readonly bool    `codec:"readonly"`
+	Options  mapList `codec:"options"`
+}
+
+// mapList is a map of strings as a task's configuration delivers one.
+//
+// Nomad hands a driver an HCL object as a list of objects, so a setting
+// declared map(string) fails validation for every job that sets it.  It has to
+// be declared list(map(string)) and the entries merged, a later one winning.
+type mapList []map[string]string
+
+func (l mapList) merged() map[string]string {
+	out := map[string]string{}
+	for _, m := range l {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // Validate checks a plugin configuration without touching the system.
@@ -370,7 +388,7 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 		if len(tc.Allow) > 0 {
 			return fmt.Errorf("the allow list needs allow_privileged = true in the driver's plugin configuration")
 		}
-		if len(tc.JailParams) > 0 {
+		if len(tc.JailParams.merged()) > 0 {
 			return fmt.Errorf("jail_params needs allow_privileged = true in the driver's plugin configuration")
 		}
 		if len(tc.ExtraRCTL) > 0 {
@@ -387,7 +405,7 @@ func (tc *TaskConfig) Validate(cfg *Config) error {
 	}
 	// A job must not reset what the driver derives, or the driver's state
 	// would stop describing the jail.
-	for name := range tc.JailParams {
+	for name := range tc.JailParams.merged() {
 		field, reserved := reservedJailParams[name]
 		switch {
 		case reserved && field != "":

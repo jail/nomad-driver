@@ -184,7 +184,7 @@ func TestJailNetworkParams(t *testing.T) {
 func TestJailParamsAllowAndPassthrough(t *testing.T) {
 	tc := defaultTaskConfig()
 	tc.Allow = []string{"mount", "mount.zfs"}
-	tc.JailParams = map[string]string{"osrelease": "14.2-RELEASE", "allow.mlock": "true"}
+	tc.JailParams = mapList{{"osrelease": "14.2-RELEASE", "allow.mlock": "true"}}
 	st := &jailState{Name: "j", Root: "/jails/web"}
 
 	params, err := jailParams(tc, st, NetworkInherit, "j")

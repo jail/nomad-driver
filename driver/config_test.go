@@ -284,12 +284,12 @@ func TestTaskConfigValidate(t *testing.T) {
 		},
 		{
 			name:    "jail_params needs allow_privileged",
-			mutate:  func(tc *TaskConfig) { tc.JailParams = map[string]string{"osrelease": "14.2-RELEASE"} },
+			mutate:  func(tc *TaskConfig) { tc.JailParams = mapList{{"osrelease": "14.2-RELEASE"}} },
 			wantErr: "allow_privileged",
 		},
 		{
 			name:    "jail_params may not set what the driver sets",
-			mutate:  func(tc *TaskConfig) { tc.JailParams = map[string]string{"path": "/etc"} },
+			mutate:  func(tc *TaskConfig) { tc.JailParams = mapList{{"path": "/etc"}} },
 			driver:  func(c *Config) { c.AllowPrivileged = true },
 			wantErr: "set by the driver",
 		},
@@ -398,7 +398,7 @@ func TestReservedJailParamsPointAtTheRightField(t *testing.T) {
 	// task field of its own has to say which.
 	for name, field := range reservedJailParams {
 		tc := defaultTaskConfig()
-		tc.JailParams = map[string]string{name: "x"}
+		tc.JailParams = mapList{{name: "x"}}
 		err := tc.Validate(cfg)
 		if err == nil {
 			t.Errorf("jail_params %q was accepted", name)
