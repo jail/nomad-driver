@@ -43,6 +43,12 @@ func run(ctx context.Context, logger hclog.Logger, name string, args ...string) 
 	return text, nil
 }
 
+// executable reports whether path is a file the driver could run.
+func executable(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
+}
+
 // sysctlString reads a string sysctl, returning "" if it does not exist.
 func sysctlString(name string) string {
 	s, err := unix.Sysctl(name)

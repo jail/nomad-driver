@@ -17,6 +17,8 @@ passed through, those of loadable modules included.
 ## Requirements
 
 - FreeBSD, with the agent running as root.
+  Tasks are started with `jexec(8)`, which on a packaged base system is in the
+  `FreeBSD-jail` package.
 - Nomad 1.9 or later on the client.  The driver is built against 1.11, and has
   been run against 1.9.6 and 1.11.3.
 - Go 1.26 or later to build.
@@ -239,9 +241,10 @@ the job asked for by name fails the task.
 | `driver.jail.allow_privileged` | Whether privileged task configuration is permitted. |
 
 The driver fingerprints as undetected, with the reason, where it could not start
-a jail: not FreeBSD, not root, `jail_get(2)` failing, an agent in a jail whose
-`children.max` is 0, a default `devfs` ruleset that is not loaded, or a `vnet`
-default without `VIMAGE`.
+a jail: not FreeBSD, not root, no `jexec(8)`, `jail_get(2)` failing, an agent in
+a jail whose `children.max` is 0, a default `devfs` ruleset that is not loaded,
+or a `vnet` default without `VIMAGE`.  The `vnet`, `zfs` and `rctl` attributes
+also need the utility that drives each.
 
 ## Examples
 

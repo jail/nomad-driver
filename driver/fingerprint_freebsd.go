@@ -53,6 +53,13 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 		return undetected("the jail driver needs to run as root, the agent is uid %d", os.Geteuid())
 	}
 
+	// On a packaged base system jexec(8) is in a package of its own, which
+	// a minimal installation lacks.
+	if !executable(pathJexec) {
+		return undetected("%s is missing; on a packaged base system it is in the FreeBSD-jail package",
+			pathJexec)
+	}
+
 	// An agent that is itself jailed needs children.max raised to create
 	// jails.
 	if _, err := jail.List(); err != nil {
@@ -78,17 +85,17 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 	}
 	fp.Attributes[attrVersion] = structs.NewStringAttribute(version)
 
+	// Each needs the kernel to be able to do it and a utility to drive it.
 	// The vnet parameter exists only with VIMAGE.
-	hasVnet := jail.HasParam("vnet")
+	hasVnet := jail.HasParam("vnet") && executable(pathIfconfig) && executable(pathRoute)
 	fp.Attributes[attrVnet] = structs.NewBoolAttribute(hasVnet)
 
 	// /dev/zfs shows that the ZFS module is loaded.
 	_, zfsErr := os.Stat("/dev/zfs")
-	fp.Attributes[attrZFS] = structs.NewBoolAttribute(zfsErr == nil)
+	fp.Attributes[attrZFS] = structs.NewBoolAttribute(zfsErr == nil && executable(pathZFS))
 
 	// rctl(8) needs RACCT and RCTL in the kernel and racct switched on.
-	racct, _ := sysctlInt("kern.racct.enable")
-	fp.Attributes[attrRCTL] = structs.NewBoolAttribute(racct != 0)
+	fp.Attributes[attrRCTL] = structs.NewBoolAttribute(racctEnabled() && executable(pathRCTL))
 
 	nested, _ := sysctlInt("security.jail.jailed")
 	fp.Attributes[attrNested] = structs.NewBoolAttribute(nested != 0)
