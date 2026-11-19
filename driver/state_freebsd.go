@@ -10,8 +10,8 @@ type jailState struct {
 	// Name is the jail's name, derived from the allocation and task.
 	Name string
 
-	// JID is the jail ID the kernel assigned.  It does not survive a
-	// reboot, and is resolved from Name again on recovery.
+	// JID is the jail ID the kernel assigned, kept to be reported.  The
+	// kernel reuses IDs, so the jail is always found by Name.
 	JID int
 
 	// Root is the jail's root: the task's path, the mount point of its ZFS
@@ -24,8 +24,9 @@ type jailState struct {
 	// Dataset is a per-task ZFS clone to destroy, if any.
 	Dataset string
 
-	// Epair is the host leg of the epair(4) made for a vnet task.
-	// Destroying it destroys both legs.
+	// Epair is the host leg of a vnet task's epair(4), epairHostName(Name),
+	// and empty for any other task.  It is kept to be reported; teardown
+	// derives the name again.
 	Epair string
 
 	// Bridge is the bridge the host leg was added to.

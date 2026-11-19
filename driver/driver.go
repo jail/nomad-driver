@@ -332,7 +332,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		}
 	}()
 
-	command, args := jexecCommand(st.JID, cfg, &taskConfig, jexecSupportsWorkDir())
+	command, args := jexecCommand(st.Name, cfg, &taskConfig, jexecSupportsWorkDir())
 	ps, err := exec.Launch(&executor.ExecCommand{
 		Cmd:        command,
 		Args:       args,
@@ -413,7 +413,7 @@ func (d *Driver) configureNetwork(logger hclog.Logger, tc *TaskConfig, st *jailS
 		st.Aliases = aliases
 		return err
 	case NetworkVnet:
-		return createVnet(d.ctx, logger, st.JID, bridgeFor(d.config, tc.Vnet), tc.Vnet, st)
+		return createVnet(d.ctx, logger, bridgeFor(d.config, tc.Vnet), tc.Vnet, st)
 	}
 	return nil
 }
@@ -437,19 +437,21 @@ func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
 	}
 	logger := d.logger.With("task_name", handle.Config.Name, "alloc_id", handle.Config.AllocID)
 
-	// A jail does not survive a reboot and the kernel reassigns jail IDs,
-	// so the ID in the handle is checked against the jail's name.
-	switch info, err := jail.Inspect(st.Name); {
-	case err == nil:
+	// A jail does not survive a reboot and the kernel reuses jail IDs, so
+	// the jail is found by name and the ID in the handle is only ever
+	// overwritten.
+	info, err := jail.Inspect(st.Name)
+	switch {
+	case err == nil && !info.Dying:
 		if info.JID != st.JID {
 			logger.Info("jail ID changed since the task was started",
 				"jail", st.Name, "old_jid", st.JID, "jid", info.JID)
 			st.JID = info.JID
 		}
-	case errors.Is(err, jail.ErrNotFound):
-		// With the jail gone the task is not running, whatever the
-		// executor says.  Clean up and fail, which makes Nomad restart
-		// it.
+	case err == nil, errors.Is(err, jail.ErrNotFound):
+		// With the jail gone or dying the task is not running, whatever
+		// the executor says.  Clean up and fail, which makes Nomad
+		// restart it.
 		logger.Warn("jail is gone, cannot recover the task", "jail", st.Name)
 		if err := d.teardown(logger, st); err != nil {
 			logger.Error("could not clean up after a vanished jail", "error", err)
@@ -584,18 +586,19 @@ func (d *Driver) teardown(logger hclog.Logger, st *jailState) error {
 
 	// Removing the jail kills its processes, which is what frees its
 	// filesystems.
-	if st.JID != 0 {
-		if err := jail.Remove(st.JID); err != nil && !errors.Is(err, jail.ErrNotFound) {
-			errs = append(errs, fmt.Errorf("removing jail %s: %w", st.Name, err))
-		} else {
-			st.JID = 0
-		}
+	if err := removeJail(st.Name); err != nil {
+		errs = append(errs, fmt.Errorf("removing jail %s: %w", st.Name, err))
+	} else {
+		st.JID = 0
 	}
 
+	// After the jail: until its network stack has gone, the leg lent to it
+	// is not the host's to destroy.
 	if err := destroyEpair(d.ctx, logger, st); err != nil {
 		errs = append(errs, err)
+	} else {
+		st.Epair, st.Bridge = "", ""
 	}
-	st.Epair, st.Bridge = "", ""
 
 	if err := removeAliases(d.ctx, logger, st.Aliases); err != nil {
 		errs = append(errs, err)
@@ -614,6 +617,31 @@ func (d *Driver) teardown(logger hclog.Logger, st *jailState) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// removeJail removes the named jail, if there is one.
+//
+// It goes by name because jail_remove(2) removes whatever has the ID it is
+// given, and the kernel reuses IDs: after a reboot, the one a task's jail had
+// is somebody else's.
+func removeJail(name string) error {
+	if name == "" {
+		return nil
+	}
+	info, err := jail.Inspect(name)
+	switch {
+	case errors.Is(err, jail.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	case info.Dying:
+		// Removed already; the kernel is not done with it yet.
+		return nil
+	}
+	if err := jail.Remove(info.JID); err != nil && !errors.Is(err, jail.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 // reclaim removes a jail left behind by an earlier run of the same task, with
@@ -647,10 +675,15 @@ func (d *Driver) reclaimFor(logger hclog.Logger, cfg *drivers.TaskConfig, name s
 // reclaimState rebuilds enough of a jail's state to tear it down, for a jail
 // found on the system rather than in a task handle.
 //
-// Its mounts follow from its root.  The aliases of an alias-mode task cannot be
-// rebuilt, and are left.
+// Its mounts follow from its root and its epair from its name.  The aliases of
+// an alias-mode task cannot be rebuilt, and are left.
 func (d *Driver) reclaimState(info jail.Info) *jailState {
-	st := &jailState{Name: info.Name, JID: info.JID, Root: info.Path}
+	st := &jailState{
+		Name:  info.Name,
+		JID:   info.JID,
+		Root:  info.Path,
+		Epair: epairHostName(info.Name),
+	}
 
 	if filepath.Base(info.Path) == rootfsMountDir {
 		// The driver mounted the root, so all of it is the task's.
@@ -683,7 +716,9 @@ func (d *Driver) reapOrphans() {
 	}
 
 	for _, info := range jails {
-		if !isDriverJail(info.Name) || info.Path == "" {
+		// A dying jail has been removed already, and its root may be
+		// its successor's by now.
+		if !isDriverJail(info.Name) || info.Path == "" || info.Dying {
 			continue
 		}
 		reason, orphan := orphanReason(info.Path)

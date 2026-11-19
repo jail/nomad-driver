@@ -5,6 +5,8 @@
 package driver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 
 	"github.com/hashicorp/nomad/plugins/drivers"
@@ -58,4 +60,22 @@ func sanitiseJailName(name string) string {
 // isDriverJail reports whether a jail name belongs to this driver.
 func isDriverJail(name string) bool {
 	return strings.HasPrefix(name, jailNamePrefix)
+}
+
+// epairNamePrefix marks the host-side leg of every epair(4) the driver creates.
+const epairNamePrefix = "nj"
+
+// epairHostName derives the name of the host leg of a vnet task's epair(4) from
+// the name of its jail.
+//
+// The kernel reuses epair units, so the name an epair is created with is
+// somebody else's after a reboot.  A derived name can be recomputed by a driver
+// that has lost its state, and names nothing but this driver's interfaces.  It
+// is the prefix and 52 bits of SHA-256, to fit IFNAMSIZ; a collision makes the
+// rename fail.
+func epairHostName(jail string) string {
+	const ifNameMax = 15
+
+	sum := sha256.Sum256([]byte(jail))
+	return epairNamePrefix + hex.EncodeToString(sum[:])[:ifNameMax-len(epairNamePrefix)]
 }

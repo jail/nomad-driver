@@ -86,7 +86,7 @@ func (h *taskHandle) jexecPrefix() []string {
 	if h.taskConfig.User != "" {
 		prefix = append(prefix, "-U", h.taskConfig.User)
 	}
-	return append(prefix, strconv.Itoa(h.jail.JID))
+	return append(prefix, h.jail.Name)
 }
 
 // jailSnapshot returns a copy of the jail state for a caller that will write to

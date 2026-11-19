@@ -244,6 +244,10 @@ start that fails part way undoes what it had done.  A restarted driver reads the
 state back, finds the jail by name, and supervises and tears down a task it did
 not start; `nomad alloc exec`, signals, statistics and logs go on working.
 
+The driver never acts on an identifier it wrote down.  The kernel reuses jail
+IDs and interface names, so a jail is always found by name, and the host leg of
+a `vnet` task's `epair` is renamed to a name derived from the jail's.
+
 Jail names are `nomad-<alloc>-<task>`, so a jail left by an earlier run of a
 task is recognised and reclaimed when the task starts again.
 `gc { jail = true }` also reaps, at startup, jails whose allocation directory
@@ -252,8 +256,7 @@ down.
 
 Not reclaimed after a crash, since nothing but the task handle records them:
 aliases added for an `alias` task and, where Nomad forgets the allocation as
-well, which in practice means `-dev`, the jail itself.  Nor is a `vnet` task's
-`epair` where the jail is reclaimed without its state.
+well, which in practice means `-dev`, the jail itself.
 
 ## Licensing
 

@@ -58,21 +58,44 @@ func removeAliases(ctx context.Context, logger hclog.Logger, aliases []string) e
 // createVnet gives a jail a network stack of its own.
 //
 // It makes an epair(4), bridges the "a" leg on the host, moves the "b" leg into
-// the jail and configures it there with jexec(8).  If this fails the caller has
-// to destroy st.Epair, since the host leg may exist by then.
-func createVnet(ctx context.Context, logger hclog.Logger, jid int, bridge string, v *VnetConfig, st *jailState) error {
+// the jail and configures it there with jexec(8).  The host leg is renamed to
+// epairHostName(st.Name) as soon as it exists, so that it can be found from the
+// jail's name.  If this fails the caller has to call destroyEpair, since the
+// host leg may exist by then.
+func createVnet(ctx context.Context, logger hclog.Logger, bridge string, v *VnetConfig, st *jailState) error {
+	hostSide := epairHostName(st.Name)
+
+	// An interface of that name is what an earlier run of this task left
+	// behind.
+	if !interfaceGone(ctx, logger, hostSide) {
+		logger.Warn("destroying an epair left behind by an earlier run", "interface", hostSide)
+		if _, err := run(ctx, logger, pathIfconfig, hostSide, "destroy"); err != nil {
+			return fmt.Errorf("destroying stale %s: %w", hostSide, err)
+		}
+	}
+
 	// ifconfig prints the name of the "a" leg; the "b" leg differs in the
 	// last character.
 	out, err := run(ctx, logger, pathIfconfig, "epair", "create")
 	if err != nil {
 		return fmt.Errorf("creating epair: %w", err)
 	}
-	hostSide := strings.TrimSpace(out)
-	if !strings.HasSuffix(hostSide, "a") {
-		return fmt.Errorf("creating epair: expected a name ending in \"a\", got %q", hostSide)
+	created := strings.TrimSpace(out)
+	if !strings.HasSuffix(created, "a") {
+		return fmt.Errorf("creating epair: expected a name ending in \"a\", got %q", created)
+	}
+	jailSide := created[:len(created)-1] + "b"
+
+	if _, err := run(ctx, logger, pathIfconfig, created, "name", hostSide); err != nil {
+		// Nothing records the name it was created under, so it goes now
+		// or never.
+		if _, derr := run(ctx, logger, pathIfconfig, created, "destroy"); derr != nil {
+			logger.Error("could not destroy an epair that could not be renamed",
+				"interface", created, "error", derr)
+		}
+		return fmt.Errorf("renaming %s to %s: %w", created, hostSide, err)
 	}
 	st.Epair = hostSide
-	jailSide := hostSide[:len(hostSide)-1] + "b"
 
 	// Say whose they are, for whoever reads ifconfig's output.
 	for _, leg := range []string{hostSide, jailSide} {
@@ -104,20 +127,22 @@ func createVnet(ctx context.Context, logger hclog.Logger, jid int, bridge string
 		return fmt.Errorf("bringing up %s: %w", hostSide, err)
 	}
 
-	// Hand the jail side over.
-	if _, err := run(ctx, logger, pathIfconfig, jailSide, "vnet", strconv.Itoa(jid)); err != nil {
-		return fmt.Errorf("moving %s into jail %d: %w", jailSide, jid, err)
+	// The jail side is lent, not given: the kernel returns it to the host
+	// when the jail's stack goes, and it is destroying the host side that
+	// removes the pair.
+	if _, err := run(ctx, logger, pathIfconfig, jailSide, "vnet", st.Name); err != nil {
+		return fmt.Errorf("moving %s into jail %s: %w", jailSide, st.Name, err)
 	}
 
-	return configureVnetInterface(ctx, logger, jid, jailSide, v, st)
+	return configureVnetInterface(ctx, logger, st.Name, jailSide, v, st)
 }
 
 // configureVnetInterface addresses the jail's leg and sets its default routes,
 // with ifconfig(8) and route(8) run through jexec(8).  With no address the
 // interface is brought up and left for the task to configure.
-func configureVnetInterface(ctx context.Context, logger hclog.Logger, jid int, iface string, v *VnetConfig, st *jailState) error {
+func configureVnetInterface(ctx context.Context, logger hclog.Logger, jailName string, iface string, v *VnetConfig, st *jailState) error {
 	jexec := func(args ...string) error {
-		_, err := run(ctx, logger, pathJexec, append([]string{strconv.Itoa(jid)}, args...)...)
+		_, err := run(ctx, logger, pathJexec, append([]string{jailName}, args...)...)
 		return err
 	}
 
@@ -169,24 +194,31 @@ func configureVnetInterface(ctx context.Context, logger hclog.Logger, jid int, i
 	return nil
 }
 
-// destroyEpair removes the host leg of a vnet task's epair(4), and the other
-// leg with it.
+// destroyEpair removes a vnet task's epair(4) by destroying its host leg.
+//
+// Removing the jail does not: vnet_if_return() hands the jail's leg back to the
+// host.  The name is derived rather than read from the state, which may have
+// been written before a reboot.
 func destroyEpair(ctx context.Context, logger hclog.Logger, st *jailState) error {
 	if st.Epair == "" {
 		return nil
 	}
+	hostSide := epairHostName(st.Name)
+
+	// Not required, since destroying an interface detaches it, but it keeps
+	// the bridge tidy if the destroy fails.
 	if st.Bridge != "" {
-		if _, err := run(ctx, logger, pathIfconfig, st.Bridge, "deletem", st.Epair); err != nil {
-			logger.Trace("could not remove epair from bridge", "epair", st.Epair,
+		if _, err := run(ctx, logger, pathIfconfig, st.Bridge, "deletem", hostSide); err != nil {
+			logger.Trace("could not remove epair from bridge", "epair", hostSide,
 				"bridge", st.Bridge, "error", err)
 		}
 	}
-	if _, err := run(ctx, logger, pathIfconfig, st.Epair, "destroy"); err != nil {
+	if _, err := run(ctx, logger, pathIfconfig, hostSide, "destroy"); err != nil {
 		// Teardown has to be safe to run twice.
-		if interfaceGone(ctx, logger, st.Epair) {
+		if interfaceGone(ctx, logger, hostSide) {
 			return nil
 		}
-		return fmt.Errorf("destroying %s: %w", st.Epair, err)
+		return fmt.Errorf("destroying %s: %w", hostSide, err)
 	}
 	return nil
 }

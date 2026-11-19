@@ -119,3 +119,39 @@ func TestIsDriverJail(t *testing.T) {
 		t.Error("one of the driver's own jails was not recognised")
 	}
 }
+
+func TestEpairHostName(t *testing.T) {
+	name := epairHostName("nomad-3a9c1b2e-web")
+
+	// IFNAMSIZ is 16, with the terminating NUL.
+	if len(name) != 15 {
+		t.Errorf("epairHostName = %q, %d characters; want 15", name, len(name))
+	}
+	if !validInterfaceName(name) {
+		t.Errorf("epairHostName = %q, which is not a valid interface name", name)
+	}
+	if !strings.HasPrefix(name, epairNamePrefix) {
+		t.Errorf("epairHostName = %q, want it to start with %q", name, epairNamePrefix)
+	}
+
+	// A driver that has lost its state finds the interface by deriving the
+	// name again.
+	if again := epairHostName("nomad-3a9c1b2e-web"); again != name {
+		t.Errorf("epairHostName is not stable: %q then %q", name, again)
+	}
+	for _, other := range []string{"nomad-3a9c1b2e-web2", "nomad-3a9c1b2f-web", "nomad-3a9c1b2e-we"} {
+		if epairHostName(other) == name {
+			t.Errorf("jails %q and %q share the epair name %q", other, "nomad-3a9c1b2e-web", name)
+		}
+	}
+}
+
+// TestEpairHostNameIsNotAnEpairUnit keeps the derived name out of the namespace
+// the kernel allocates from, where it could name somebody else's interface.
+func TestEpairHostNameIsNotAnEpairUnit(t *testing.T) {
+	for _, jail := range []string{"", "nomad-a", "nomad-3a9c1b2e-web"} {
+		if name := epairHostName(jail); strings.HasPrefix(name, "epair") {
+			t.Errorf("epairHostName(%q) = %q, inside the kernel's own namespace", jail, name)
+		}
+	}
+}
