@@ -16,6 +16,14 @@ import (
 
 // rctlRules turns a task's Nomad resources into rctl(8) rules on its jail.
 //
+// Memory becomes memoryuse:deny, which promises more than it does.  memoryuse
+// is resident set size and not deniable; rctl_rule_add() lets the rule through
+// as a special case, and vm_daemon enforces it by unmapping pages the jail has
+// not referenced since the page daemon last looked.  Nothing is refused and
+// nothing is killed: with memory to spare an idle task is over its limit for
+// minutes, and a busy one for good.  A job that needs more adds a sigkill,
+// swapuse or vmemoryuse rule.
+//
 // CPU is not translated: Nomad counts MHz and pcpu is a percentage of a core,
 // so a conversion would be a guess at the node's clock.  Reserved cores get a
 // cpuset instead.

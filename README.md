@@ -103,6 +103,12 @@ defined the volume.
 The task's `user` is resolved in the jail, from its own `passwd` database, by
 `jexec -U`.
 
+As for any user `jexec` is given, the login class the jail's `login.conf(5)`
+has for it is applied: resource limits, umask and priority come from there,
+`PATH` and any `setenv` entries replace what Nomad set, and `USER`, `HOME` and
+`SHELL` come from the password entry.  A task with no `user` runs as root with
+Nomad's environment untouched.
+
 ### The root filesystem
 
 | Field             | Default | Meaning                                                                                   |
@@ -219,6 +225,18 @@ Nomad's `dns` block is written to `/etc/resolv.conf` in the jail.
 
 Memory becomes `memoryuse:deny`, of `memory_max` where the job set one.
 
+That is a soft limit.  `memoryuse` is resident set size, and the kernel
+enforces it by unmapping pages the jail has not touched lately; it refuses no
+memory and kills nothing.  On a host with memory to spare, an idle task holding
+four times its limit took ten minutes to be brought down to it, and one that
+kept touching its memory never was.
+
+A job that needs more adds a rule through `extra_rctl`.  `memoryuse:sigkill=`
+kills the task at the limit, counting a page once for each process that maps
+it.  `swapuse:deny=` caps what the jail may commit, which is more than it uses.
+`vmemoryuse:deny=` caps address space, of which a Go program reserves several
+times what it uses.  `resource_limits = false` does without the default.
+
 CPU is not translated: Nomad counts MHz and `pcpu` is a percentage of a core, so
 a conversion would be a guess at the node's clock.  A job can state a ceiling in
 `extra_rctl`; reserved cores get a `cpuset`.
@@ -279,6 +297,10 @@ start that fails part way undoes what it had done.  A restarted driver reads the
 state back, finds the jail by name, and supervises and tears down a task it did
 not start; `nomad alloc exec`, signals, statistics and logs go on working.
 
+Stopping a task signals its main process and waits out `kill_timeout`.  Whatever
+else is still running in the jail after that is killed with the jail,
+unsignalled, so a task that supervises others has to pass the signal on.
+
 The driver never acts on an identifier it wrote down.  The kernel reuses jail
 IDs and interface names, so a jail is always found by name, and the host leg of
 a `vnet` task's `epair` is renamed to a name derived from the jail's.
@@ -290,8 +312,10 @@ has gone: the agent was killed, and its allocations were collected while it was
 down.
 
 Not reclaimed after a crash, since nothing but the task handle records them:
-aliases added for an `alias` task and, where Nomad forgets the allocation as
-well, which in practice means `-dev`, the jail itself.
+aliases added for an `alias` task; what a job's `mount` and `volume_mount` put
+under a root it named, where the jail is reaped without its state; and, where
+Nomad forgets the allocation as well, which in practice means `-dev`, the jail
+itself.
 
 ## Licensing
 
