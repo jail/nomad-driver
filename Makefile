@@ -28,11 +28,13 @@ vet:
 	GOOS=$(GOOS) go vet ./...
 	go vet ./...
 
-# staticcheck has to be built with this module's toolchain and run with
-# GOOS=freebsd: elsewhere the build tags hide most of the driver, and what it
-# uses looks dead.
+# staticcheck has to be built with this module's toolchain, for the host, and
+# run with GOOS=freebsd: elsewhere the build tags hide most of the driver, and
+# what it uses looks dead.  Setting GOOS for go run would build it for FreeBSD
+# as well, so it is set for the program alone.
 lint: vet
-	GOOS=$(GOOS) go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+	GOOS= GOARCH= go run -exec "env GOOS=$(GOOS)" \
+	    honnef.co/go/tools/cmd/staticcheck@latest ./...
 
 fmt:
 	gofmt -l -w .
